@@ -1,0 +1,113 @@
+\ ============================================================================
+\  The MODE 7 encoder: turns each graphics row's NEED (colour each cell needs,
+\  0 = any) and GLY (its character) into teletext. Column 0 turns hold
+\  graphics on; a colour change goes into an empty cell before the cell that
+\  needs it when there is one, else replaces that cell (which then repeats
+\  the held character). Rows gr0..gr1 go to the back buffer.
+\ ============================================================================
+.encode
+{
+    lda gr0
+    sta cr
+.row
+    ldx cr
+    clc
+    lda rowcell_lo,x
+    sta en+1
+    sta eg+1
+    sta eo+1
+    sta eo2+1
+    sta ptr3
+    adc #1
+    sta en1+1
+    lda rowcell_hi,x
+    adc #HI(NEED)
+    sta en1+2
+    lda rowcell_hi,x
+    clc
+    adc #HI(NEED)
+    sta en+2
+    adc #4
+    sta eg+2
+    lda rowcell_hi,x
+    clc
+    adc backhi
+    sta eo+2
+    sta eo2+2
+    sta ptr3+1
+    lda en+1            \ the same rows, one cell back
+    sec
+    sbc #1
+    sta enp+1
+    lda en+2
+    sbc #0
+    sta enp+2
+    lda eo+1
+    sec
+    sbc #1
+    sta eop+1
+    lda eo+2
+    sbc #0
+    sta eop+2
+    lda HOLD,x
+    and #1              \ &9E -> 0: hold row
+    eor #1
+    sta ehold
+    ldy #0
+    lda HOLD,x          \ &9E on globe rows, a space elsewhere
+    sta (ptr3),y
+    sty fg
+    iny
+.l
+.en lda &FFFF,y
+    beq empty
+    cmp fg
+    bne change
+.eg lda &FFFF,y
+.out
+.eo sta &FFFF,y
+    iny
+    cpy #40
+    bne l
+.rend
+    lda cr
+    cmp gr1
+    beq done
+    inc cr
+    jmp row
+.done
+    rts
+.change
+    sta fg
+    lda ehold           \ not a hold row and the cell before is an orbit
+    bne plain           \ dot: the colour code takes that cell instead
+.enp lda &FFFF,y
+    cmp #4
+    bne plain
+    lda fg
+    ora #&90
+.eop sta &FFFF,y
+    jmp eg
+.plain
+    lda fg
+    ora #&90
+    bne out
+.empty
+.en1 lda &FFFF,y
+    bne look
+    lda #&A0            \ empty and the next too: a space (the common case)
+.eo2 sta &FFFF,y
+    iny
+    cpy #40
+    bne l
+    beq rend
+.look
+    cmp fg
+    beq space
+    sta fg
+    ora #&90
+    bne out
+.space
+    lda #&A0
+    bne out
+}

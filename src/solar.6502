@@ -1,0 +1,2280 @@
+\ ============================================================================
+\  BEEB-SOLAR - an interactive solar system for the BBC Micro Model B, MODE 7
+\  Real orbits (JPL Keplerian elements), whole-system and inner-system views,
+\  eased zooms onto any body, rotating texture-mapped globes in sextant
+\  graphics with per-row background colour, double-buffered with the Model B's
+\  second MODE 7 screen at &3C00.
+\ ============================================================================
+
+OSWRCH = &FFEE
+OSBYTE = &FFF4
+SCRA   = &7C00          \ the MOS's MODE 7 screen (CRTC R12 = &28)
+SCRB   = &3C00          \ the Model B's other MODE 7 screen (CRTC R12 = &20)
+TEX    = &4000          \ current texture, 128 x 64 materials
+NEED   = &6000          \ per cell: colour the cell needs (0 = none)
+GLY    = &6400          \ per cell: the character (sextant or control code)
+UBUF   = &6800          \ sphere longitude tables
+UBUFEND= &6D60        \ (radius 31 needs 1372 bytes)
+TEXEND = &6000
+OSFILE = &FFDD
+OSCLI  = &FFF7
+
+NB     = 10             \ bodies: 0 Sun, 1-8 Mercury..Neptune, 9 Moon
+CX     = 41             \ screen centre, pixels
+CY     = 37
+ASPK   = 233            \ 256 / 1.1 (horizontal radius from vertical)
+
+\ ---------------------------------------------------------------- zero page
+ORG &00
+GUARD &90
+.vframes  SKIP 1
+.lastv    SKIP 1
+.elapsed  SKIP 1
+.fcount   SKIP 1
+.fpsv     SKIP 1
+.fpstime  SKIP 1
+.backhi   SKIP 1
+.seed     SKIP 2
+.ptr      SKIP 2
+.ptr2     SKIP 2
+.ptr3     SKIP 2
+.t0       SKIP 1
+.t1       SKIP 1
+.t2       SKIP 1
+.t3       SKIP 1
+.t4       SKIP 1
+.t5       SKIP 1
+.t6       SKIP 1
+.t7       SKIP 1
+.fg       SKIP 1
+.pat      SKIP 1
+.fgx      SKIP 1
+.mul_a    SKIP 1
+.mul_b    SKIP 1
+.mul_lo   SKIP 1
+.dnum     SKIP 2
+.ddiv     SKIP 1
+.px       SKIP 2        \ plot position (signed 16-bit pixels)
+.py       SKIP 2
+.pcol     SKIP 1
+.zs       SKIP 1        \ zoom progress 0 (system) .. 255 (close-up)
+.zdir     SKIP 1        \ 0 still, 1 zooming in, &FF zooming out
+.cur      SKIP 1        \ body being zoomed to / shown
+.sel      SKIP 1        \ body selected in the system view
+.nextb    SKIP 1        \ body to fly to after zooming out (&FF none)
+.view     SKIP 1        \ 0 whole system, 1 inner planets
+.tilt     SKIP 1
+.orbits   SKIP 1
+.info     SKIP 1
+.mzlast   SKIP 2
+.ehold    SKIP 1        \ encoder: 1 = no hold on this row
+.ckey     SKIP 1
+.gsteady  SKIP 1        \ 1: the close-up's geometry is in the c_ tables
+.gsg0     SKIP 1
+.gsg1     SKIP 1        \ what the background cache holds (0 = nothing)
+.showfps  SKIP 1
+.speed    SKIP 1        \ 0..10: 2^speed / 64 days per vsync
+.tdir     SKIP 1        \ 0 forwards, 1 backwards
+.paused   SKIP 1
+.gr0      SKIP 1        \ graphics rows gr0..gr1
+.gr1      SKIP 1
+.gpy0     SKIP 1        \ pixel rows gpy0..gpy1
+.gpy1     SKIP 1
+.ox       SKIP 2        \ zoom transform origin (screen pixels)
+.oy       SKIP 2
+.qx       SKIP 1        \ zoom target in system coordinates
+.qy       SKIP 1
+.zf       SKIP 2        \ zoom factor, 8.8
+.ee       SKIP 1        \ eased zoom
+.gR       SKIP 1        \ globe radius (pixel rows)
+.gcx      SKIP 2        \ globe centre
+.gcy      SKIP 2
+.lastR    SKIP 1
+.Bm       SKIP 1        \ row's background material
+.Bc       SKIP 1        \ and its colour
+.fgmode   SKIP 1
+.cr       SKIP 1
+.texb     SKIP 1        \ body whose texture is unpacked
+.rowcells SKIP 2
+.zpend
+IF zpend > &90
+    ERROR "zero page"
+ENDIF
+
+\ ---------------------------------------------------------------- code
+ORG &1900
+GUARD SCRB
+.start
+{
+    ldx #&8F            \ save the caller's zero page
+.sz lda &00,x
+    sta zpsave,x
+    dex
+    cpx #&FF
+    bne sz
+    ldx #LO(ld_data)    \ the high tables
+    ldy #HI(ld_data)
+    jsr OSCLI
+    ldx #LO(ld_text)    \ names and facts (BASIC's workspace, cleared on exit)
+    ldy #HI(ld_text)
+    jsr OSCLI
+    jsr init_system
+    lda #0
+    ldx #zpend-vframes-1
+.cz sta vframes,x
+    dex
+    bpl cz
+    ldx #NKEYS-1
+.ck sta KEYS,x
+    sta KPREV,x
+    sta KLATCH,x
+    dex
+    bpl ck
+    lda &FE44
+    sta seed
+    lda &FE48
+    ora #1
+    sta seed+1
+    lda #&7C            \ show SCRA, draw into SCRB
+    sta backhi
+    lda #1
+    sta orbits
+    sta info
+    lda #3              \ Earth selected
+    sta sel
+    lda #&FF
+    sta nextb
+    sta texb
+    sta lastR
+    lda #0
+    sta ckey
+    sta mzlast
+    sta mzlast+1
+    lda #5
+    sta speed
+    jsr set_speed
+    jsr reset_time
+    jsr clear_screens
+    lda #&3C
+    sta backhi
+    lda vframes
+    sta lastv
+    sta fpstime
+.loop
+    lda vframes
+    sec
+    sbc lastv
+    cmp #5
+    bcc el
+    lda #4
+.el sta elapsed
+    lda vframes
+    sta lastv
+    jsr read_keys
+    jsr handle_keys
+    lda quitf
+    bne quit
+    jsr advance_time
+    jsr update_zoom
+    jsr render
+    jsr flip
+    inc fcount
+    lda vframes
+    sec
+    sbc fpstime
+    cmp #50
+    bcc loop
+    lda vframes
+    sta fpstime
+    lda fcount
+    sta fpsv
+    lda #0
+    sta fcount
+    jmp loop
+.quit
+.qw lda vframes
+.qv cmp vframes
+    beq qv
+    jsr read_keys
+    lda KEYS+K_Q
+    ora KEYS+K_ESC
+    bne qw
+    lda #13             \ events off, restore the vector
+    ldx #4
+    ldy #0
+    jsr OSBYTE
+    sei
+    lda oldev
+    sta &220
+    lda oldev+1
+    sta &221
+    cli
+    lda #229
+    ldx #0
+    ldy #0
+    jsr OSBYTE
+    lda #4
+    ldx #0
+    ldy #0
+    jsr OSBYTE
+    lda #15
+    ldx #0
+    jsr OSBYTE
+    lda #22             \ MODE 7 (CRTC back to &7C00)
+    jsr OSWRCH
+    lda #7
+    jsr OSWRCH
+    lda #0              \ BASIC's variable list heads (the text was there)
+    ldx #&7F
+.cz0 sta &0480,x
+    dex
+    bpl cz0
+    ldx #&8F
+.rz lda zpsave,x
+    sta &00,x
+    dex
+    cpx #&FF
+    bne rz
+    rts
+}
+
+.ld_data EQUS "LOAD SOLARD", 13
+.ld_text EQUS "LOAD SOLART", 13
+.init_system
+{
+    lda #22
+    jsr OSWRCH
+    lda #7
+    jsr OSWRCH
+    ldx #0
+.c  lda cursoff,x
+    jsr OSWRCH
+    inx
+    cpx #10
+    bne c
+    lda #229            \ ESCAPE is an ordinary key
+    ldx #1
+    ldy #0
+    jsr OSBYTE
+    lda #4              \ cursor keys are ordinary keys
+    ldx #1
+    ldy #0
+    jsr OSBYTE
+    sei
+    lda &220
+    sta oldev
+    lda &221
+    sta oldev+1
+    lda #LO(vsync_event)
+    sta &220
+    lda #HI(vsync_event)
+    sta &221
+    cli
+    lda #14
+    ldx #4
+    ldy #0
+    jmp OSBYTE
+.cursoff EQUB 23,1,0,0,0,0,0,0,0,0
+}
+
+.vsync_event
+{
+    \ Event 4 (vsync, 50 Hz) inside the IRQ: count vsyncs and latch every key
+    \ seen down, so a tap shorter than a frame is still seen. Skipped when the
+    \ MOS has no key down (&EC, &ED both 0). A, X, Y and flags are kept.
+    php
+    cmp #4
+    bne chain
+    inc vframes
+    pha
+    lda &EC
+    ora &ED
+    beq none
+    txa
+    pha
+    lda &FE43
+    pha
+    lda #&7F
+    sta &FE43
+    lda #3
+    sta &FE40
+    ldx #NKEYS-1
+.l  lda keycodes,x
+    sta &FE4F
+    lda &FE4F
+    bpl n
+    lda #&FF
+    sta KLATCH,x
+.n  dex
+    bpl l
+    lda #&0B
+    sta &FE40
+    pla
+    sta &FE43
+    pla
+    tax
+.none
+    pla
+.chain
+    plp
+    jmp (oldev)
+}
+
+.read_keys
+{
+    ldx #NKEYS-1
+.cp lda KEYS,x
+    sta KPREV,x
+    dex
+    bpl cp
+    ldy #0
+    ldx #NKEYS-1
+    sei
+.l  lda KLATCH,x
+    sta KEYS,x
+    tya
+    sta KLATCH,x
+    dex
+    bpl l
+    cli
+    lda #21             \ flush the keyboard buffer
+    ldx #0
+    jmp OSBYTE
+}
+
+\ Z = 0 if key X went down this frame
+.edge
+{
+    lda KPREV,x
+    eor #&FF
+    and KEYS,x
+    rts
+}
+
+\ 16-bit xorshift: A = random byte, X Y kept
+.rnd
+{
+    lda seed+1
+    lsr a
+    lda seed
+    ror a
+    eor seed+1
+    sta seed+1
+    ror a
+    eor seed
+    sta seed
+    eor seed+1
+    sta seed+1
+    rts
+}
+
+\ mul_a x mul_b -> A (high), mul_lo (low). X is used.
+.mulu8
+{
+    lda #0
+    ldx #8
+    lsr mul_b
+.l  bcc n
+    clc
+    adc mul_a
+.n  ror a
+    ror mul_lo
+    dex
+    bne l
+    rts
+}
+\ the result ends up in mul_lo:A only if mul_lo is the multiplier's register
+\ (it is shifted through it), so the multiplier is copied there first.
+.mul8
+{
+    sta mul_a
+    lda mul_b
+    sta mul_lo
+    lda #0
+    ldx #8
+    lsr mul_lo
+.l  bcc n
+    clc
+    adc mul_a
+.n  ror a
+    ror mul_lo
+    dex
+    bne l
+    rts
+}
+
+\ dnum (16-bit) / A -> dnum (16-bit quotient), A = remainder. Divisor < 128.
+.div16
+{
+    sta ddiv
+    lda #0
+    ldx #16
+.l  asl dnum
+    rol dnum+1
+    rol a
+    cmp ddiv
+    bcc s
+    sbc ddiv
+    inc dnum
+.s  dex
+    bne l
+    rts
+}
+
+.clear_screens
+{
+    ldx #0
+    lda #' '
+.l  sta SCRA,x
+    sta SCRA+&100,x
+    sta SCRA+&200,x
+    sta SCRA+&300,x
+    sta SCRB,x
+    sta SCRB+&100,x
+    sta SCRB+&200,x
+    sta SCRB+&300,x
+    inx
+    bne l
+    rts
+}
+
+\ show the back buffer from the next frame, wait for that vsync (and at least
+\ two vsyncs since the last flip), then draw into the other one
+.flip
+{
+    lda #12
+    sta &FE00
+    lda backhi
+    cmp #&7C
+    beq a
+    lda #&20
+    bne b
+.a  lda #&28
+.b  sta &FE01
+    lda #13
+    sta &FE00
+    lda #0
+    sta &FE01
+    lda vframes
+.w1 cmp vframes
+    beq w1
+.w2 lda vframes
+    sec
+    sbc lastflip
+    cmp #2
+    bcc w2
+    lda vframes
+    sta lastflip
+    lda backhi
+    eor #(&7C EOR &3C)
+    sta backhi
+    rts
+}
+
+\ ---------------------------------------------------------------- keys
+.handle_keys
+{
+    ldx #K_Q
+    jsr edge
+    bne q
+    ldx #K_ESC
+    jsr edge
+    beq nq
+.q  lda #1
+    sta quitf
+    rts
+.nq ldx #K_COMMA        \ time slower / faster
+    jsr edge
+    bne slow
+    ldx #K_DOWN
+    jsr edge
+    beq k1
+.slow
+    lda speed
+    beq k1
+    dec speed
+    jsr set_speed
+.k1 ldx #K_PERIOD
+    jsr edge
+    bne fast
+    ldx #K_UP
+    jsr edge
+    beq k2
+.fast
+    lda speed
+    cmp #10
+    bcs k2
+    inc speed
+    jsr set_speed
+.k2 ldx #K_R
+    jsr edge
+    beq k3
+    lda tdir
+    eor #1
+    sta tdir
+    lda #0
+    sta paused
+.k3 ldx #K_P
+    jsr edge
+    beq k4
+    lda paused
+    eor #1
+    sta paused
+.k4 ldx #K_N
+    jsr edge
+    beq k5
+    jsr reset_time
+.k5 ldx #K_V
+    jsr edge
+    beq k6
+    lda view
+    eor #1
+    sta view
+    lda view            \ inner view: keep the selection on an inner planet
+    beq k6
+    lda sel
+    cmp #5
+    bcc k6
+    cmp #9
+    beq k6
+    lda #3
+    sta sel
+.k6 ldx #K_T
+    jsr edge
+    beq k7
+    lda tilt
+    eor #1
+    sta tilt
+.k7 ldx #K_O
+    jsr edge
+    beq k8
+    lda orbits
+    eor #1
+    sta orbits
+.k8 ldx #K_I
+    jsr edge
+    beq k9
+    lda info
+    eor #1
+    sta info
+.k9 ldx #K_F
+    jsr edge
+    beq k10
+    lda showfps
+    eor #1
+    sta showfps
+.k10
+    \ body choice: digits, S (Sun), M (Moon), cursor left / right
+    ldx #9
+.dl txa
+    pha
+    clc
+    adc #K_D0
+    tax
+    jsr edge
+    beq dn
+    pla
+    jmp choose
+.dn pla
+    tax
+    dex
+    bpl dl
+    ldx #K_S
+    jsr edge
+    beq ns
+    lda #0
+    jmp choose
+.ns ldx #K_M
+    jsr edge
+    beq nm
+    lda #9
+    jmp choose
+.nm ldx #K_LEFT
+    jsr edge
+    beq nl
+    jsr basebody
+    sec
+    sbc #1
+    bpl c1
+    lda #9
+.c1 jmp step_to
+.nl ldx #K_RIGHT
+    jsr edge
+    beq nr
+    jsr basebody
+    clc
+    adc #1
+    cmp #10
+    bcc c2
+    lda #0
+.c2 jmp step_to
+.nr ldx #K_SPACE
+    jsr edge
+    bne sp
+    ldx #K_RETURN
+    jsr edge
+    beq done
+.sp lda zdir            \ moving: turn round
+    beq still
+    eor #&FE
+    sta zdir
+    lda #&FF
+    sta nextb
+    rts
+.still
+    lda zs
+    bne zout
+    lda sel
+    jmp go_body
+.zout
+    lda #&FF
+    sta zdir
+    sta nextb
+    rts
+.done
+    rts
+}
+\ the body the arrow keys step from: the one shown, else the selection
+.basebody
+{
+    lda zs
+    beq s
+    lda nextb
+    bpl r
+    lda cur
+.r  rts
+.s  lda sel
+    rts
+}
+\ cursor keys: in the system view move the selection, else fly there
+.step_to
+{
+    ldx zs
+    bne choose
+    ldx view            \ the inner view skips the outer planets
+    beq s
+    cmp #5
+    bcc s
+    cmp #9
+    beq s
+    ldx KEYS+K_LEFT
+    beq r
+    lda #4
+    bne s
+.r  lda #9
+.s  sta sel
+    rts
+}
+\ A = body: from the system view zoom straight in; from a close-up (or a
+\ zoom) fly out and then in to it
+.choose
+{
+    sta sel
+    ldx zs
+    beq go_body
+    cmp cur
+    bne other
+    lda #1              \ same body: zoom (back) in
+    sta zdir
+    lda #&FF
+    sta nextb
+    rts
+.other
+    sta nextb
+    lda #&FF
+    sta zdir
+    rts
+}
+.go_body
+{
+    sta cur
+    sta sel
+    jsr load_body
+    lda #1
+    sta zdir
+    rts
+}
+
+\ ---------------------------------------------------------------- time
+.reset_time
+{
+    ldx #NB-1
+.l  lda m0_0,x
+    sta macc0,x
+    lda m0_1,x
+    sta macc1,x
+    lda m0_2,x
+    sta macc2,x
+    lda m0_3,x
+    sta macc3,x
+    dex
+    bpl l
+    lda #START_DAY
+    sta day
+    lda #START_MONTH
+    sta month
+    lda #START_YEAR DIV 100
+    sta cent
+    lda #START_YEAR MOD 100
+    sta yy
+    lda #0
+    sta dayfrac
+    rts
+}
+
+\ step = nrate << speed for every body
+.set_speed
+{
+    ldx #NB-1
+.l  lda nrate_0,x
+    sta step0,x
+    lda nrate_1,x
+    sta step1,x
+    lda nrate_2,x
+    sta step2,x
+    lda nrate_3,x
+    sta step3,x
+    ldy speed
+    beq n
+.s  asl step0,x
+    rol step1,x
+    rol step2,x
+    rol step3,x
+    dey
+    bne s
+.n  dex
+    bpl l
+    rts
+}
+
+.advance_time
+{
+    lda paused
+    beq go
+    rts
+.go lda elapsed
+    sta t7
+.rep
+    ldx #NB-1
+    lda tdir
+    bne back
+.f  clc
+    lda macc0,x
+    adc step0,x
+    sta macc0,x
+    lda macc1,x
+    adc step1,x
+    sta macc1,x
+    lda macc2,x
+    adc step2,x
+    sta macc2,x
+    lda macc3,x
+    adc step3,x
+    sta macc3,x
+    dex
+    bpl f
+    bmi date
+.back
+    sec
+    lda macc0,x
+    sbc step0,x
+    sta macc0,x
+    lda macc1,x
+    sbc step1,x
+    sta macc1,x
+    lda macc2,x
+    sbc step2,x
+    sta macc2,x
+    lda macc3,x
+    sbc step3,x
+    sta macc3,x
+    dex
+    bpl back
+.date
+    \ calendar: 2^speed sixty-fourths of a day
+    lda speed
+    cmp #6
+    bcs days
+    tax
+    lda pow2,x
+    ldx tdir
+    bne fb
+    clc
+    adc dayfrac
+    cmp #64
+    bcc fs
+    and #63
+    sta dayfrac
+    jsr day_inc
+    jmp nxt
+.fb sta t6
+    lda dayfrac
+    sec
+    sbc t6
+    bcs fs
+    and #63
+    sta dayfrac
+    jsr day_dec
+    jmp nxt
+.fs sta dayfrac
+    jmp nxt
+.days
+    sbc #6
+    tax
+    lda pow2,x
+    sta t6
+.dd lda tdir
+    bne d2
+    jsr day_inc
+    jmp d3
+.d2 jsr day_dec
+.d3 dec t6
+    bne dd
+.nxt
+    dec t7
+    beq dn
+    jmp rep
+.dn rts
+}
+.pow2 EQUB 1,2,4,8,16,32,64,128
+
+.mlen                   \ days in month X (1-12) -> A
+{
+    lda mdays-1,x
+    cpx #2
+    bne r
+    pha
+    lda yy
+    and #3
+    bne nl
+    lda yy
+    bne lp
+    lda cent
+    and #3
+    bne nl
+.lp pla
+    clc
+    adc #1
+    rts
+.nl pla
+.r  rts
+}
+.mdays EQUB 31,28,31,30,31,30,31,31,30,31,30,31
+
+.day_inc
+{
+    inc day
+    ldx month
+    jsr mlen
+    cmp day
+    bcs r
+    lda #1
+    sta day
+    inc month
+    lda month
+    cmp #13
+    bcc r
+    lda #1
+    sta month
+    inc yy
+    lda yy
+    cmp #100
+    bcc r
+    lda #0
+    sta yy
+    inc cent
+.r  rts
+}
+.day_dec
+{
+    dec day
+    bne r
+    dec month
+    bne m
+    lda #12
+    sta month
+    dec yy
+    bpl m
+    lda #99
+    sta yy
+    dec cent
+.m  ldx month
+    jsr mlen
+    sta day
+.r  rts
+}
+
+\ ---------------------------------------------------------------- zoom state
+.update_zoom
+{
+    lda zdir
+    beq still
+    bmi out
+    lda elapsed         \ zooming in: 4 per vsync
+    asl a
+    asl a
+    clc
+    adc zs
+    bcc i1
+    lda #255
+.i1 sta zs
+    cmp #255
+    bne r
+    lda #0
+    sta zdir
+.r  rts
+.out
+    lda elapsed
+    asl a
+    asl a
+    sta t0
+    lda zs
+    sec
+    sbc t0
+    bcs o1
+    lda #0
+.o1 sta zs
+    bne r
+    lda #0              \ out: fly on to the next body, if any
+    sta zdir
+    lda nextb
+    bmi r
+    ldx #&FF
+    stx nextb
+    jmp go_body
+.still
+    rts
+}
+
+\ unpack body cur's texture into TEX (run-length codes, then dithering) and
+\ set its palette, row base materials and spin rates
+.load_body
+{
+    ldx cur
+    cpx texb
+    bne go0
+    rts
+.go0
+    lda #0              \ the texture overwrites the background cache
+    sta ckey
+.go stx texb
+    lda body_fg,x
+    sta fgmode
+    lda body_pal_lo,x
+    sta ptr2
+    lda body_pal_hi,x
+    sta ptr2+1
+    ldy #15
+.pl lda (ptr2),y        \ palette then dither probabilities
+    sta palcur,y
+    dey
+    bpl pl
+    \ load file Tn so that it ends at TEXEND: it is decoded in place (each
+    \ code makes at least one texel, so the output never overtakes the input)
+    txa
+    ora #'0'
+    sta tname+1
+    lda #LO(TEXEND)
+    sec
+    sbc body_texlen_lo,x
+    sta osblk+2
+    sta ptr
+    lda #HI(TEXEND)
+    sbc body_texlen_hi,x
+    sta osblk+3
+    sta ptr+1
+    lda #LO(tname)
+    sta osblk
+    lda #HI(tname)
+    sta osblk+1
+    lda #&FF
+    sta osblk+4
+    sta osblk+5
+    lda #0
+    sta osblk+6
+    lda #&FF
+    ldx #LO(osblk)
+    ldy #HI(osblk)
+    jsr OSFILE
+    \ row base materials: 64 values
+    lda #LO(rowbase)
+    sta ptr3
+    lda #HI(rowbase)
+    sta ptr3+1
+    lda #64
+    sta t2
+    lda #0
+    sta t3
+    jsr unrle
+    \ texels: 8192 values
+    lda #LO(TEX)
+    sta ptr3
+    lda #HI(TEX)
+    sta ptr3+1
+    lda #0
+    sta t2
+    lda #&20
+    sta t3
+    jsr unrle
+    \ dithering: a texel of material m stays m with probability dith[m]/256
+    lda #LO(TEX)
+    sta ptr3
+    lda #HI(TEX)
+    sta ptr3+1
+    ldx #&20
+    ldy #0
+.dl lda (ptr3),y
+    beq dn
+    sta t0
+    stx t1
+    tax
+    lda palcur+8,x
+    beq dk
+    sta t4
+    jsr rnd
+    cmp t4
+    bcc dk
+    lda #0
+    sta (ptr3),y
+.dk ldx t1
+.dn iny
+    bne dl
+    inc ptr3+1
+    dex
+    bne dl
+    \ spin rates per texture row (the Sun's surface turns faster at its equator)
+    ldx cur
+    lda body_spin_lo,x
+    sta t0
+    lda body_spin_hi,x
+    sta t1
+    ldy #63
+.sl lda t0
+    sta rrate_lo,y
+    lda t1
+    sta rrate_hi,y
+    lda #0
+    sta racc_lo,y
+    lda #64
+    sta racc_hi,y
+    dey
+    bpl sl
+    cpx #0
+    bne nd
+    ldy #63
+.sd lda diffrot,y       \ Sun: rate = spin * diffrot / 256 (spin > 0)
+    sta mul_b
+    lda t0
+    jsr mul8
+    sta rrate_lo,y
+    lda #0
+    sta rrate_hi,y
+    dey
+    bpl sd
+.nd rts
+}
+
+.tname EQUS "T0", 13
+\ run-length decode from (ptr) to (ptr3), t3:t2 values (t2 = low byte)
+\ code: material << 5 | (run - 1)
+.unrle
+{
+    ldy #0
+.l  lda (ptr),y
+    inc ptr
+    bne a
+    inc ptr+1
+.a  pha
+    and #31
+    tax
+    inx
+    pla
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+.r  sta (ptr3),y
+    inc ptr3
+    bne b
+    inc ptr3+1
+.b  pha
+    lda t2
+    bne c
+    dec t3
+.c  dec t2
+    lda t2
+    ora t3
+    beq done
+    pla
+    dex
+    bne r
+    beq l
+.done
+    pla
+    rts
+}
+
+\ ---------------------------------------------------------------- rendering
+.render
+{
+    \ which rows are graphics
+    lda #0
+    sta gr0
+    lda #24
+    sta gr1
+    lda info
+    beq g
+    lda #1
+    sta gr0
+    lda #23
+    sta gr1
+    lda zs
+    cmp #255
+    bne g
+    lda zdir
+    bne g
+    lda #2
+    sta gr0
+    lda #22
+    sta gr1
+.g  lda gr0
+    asl a
+    adc gr0
+    sta gpy0
+    lda gr1
+    asl a
+    adc gr1
+    adc #2
+    sta gpy1
+    \ system view: the stars and orbits come from the cache in TEX
+    lda zs
+    bne nc
+    jsr bg_key
+    cmp ckey
+    bne nc
+    jsr bg_load
+    jmp pos
+.nc lda zs              \ steady close-up: keep the globe's cells
+    cmp #255
+    bne full
+    lda zdir
+    bne full
+    lda gsteady
+    beq full
+    lda gr0
+    cmp gsg0
+    bne full
+    lda gr1
+    cmp gsg1
+    bne full
+    jsr part_clear
+    jsr draw_stars
+    jmp pos
+.full
+    lda #0
+    sta gsteady
+    jsr clear_need
+    jsr draw_stars
+.pos
+    jsr positions
+    jsr zoom_setup
+    lda zs
+    cmp #255
+    beq body
+    jsr draw_system
+.body
+    lda zs
+    beq nob
+    jsr draw_target
+.nob
+    jsr encode
+    jmp draw_text
+}
+
+\ the background cache key: view, tilt, orbits, info (bit 7 set)
+.bg_key
+{
+    lda view
+    and #1
+    sta t0
+    lda tilt
+    beq a
+    lda #2
+.a  ora t0
+    sta t0
+    lda orbits
+    beq b
+    lda #4
+.b  ora t0
+    sta t0
+    lda info
+    beq c
+    lda #8
+.c  ora t0
+    ora #&80
+    rts
+}
+CNEED = TEX
+\ NEED/GLY (1000 bytes each) <-> the cache
+.bg_load
+{
+    ldx #249
+.l  lda CNEED,x
+    sta NEED,x
+    lda CNEED+250,x
+    sta NEED+250,x
+    lda CNEED+500,x
+    sta NEED+500,x
+    lda CNEED+750,x
+    sta NEED+750,x
+    lda CNEED+&400,x
+    sta GLY,x
+    lda CNEED+&400+250,x
+    sta GLY+250,x
+    lda CNEED+&400+500,x
+    sta GLY+500,x
+    lda CNEED+&400+750,x
+    sta GLY+750,x
+    dex
+    cpx #&FF
+    bne l
+    lda #0
+    sta NEED+1000
+    lda #' '
+    ldx #24
+.h  sta HOLD,x
+    dex
+    bpl h
+    rts
+}
+.bg_save
+{
+    ldx #249
+.l  lda NEED,x
+    sta CNEED,x
+    lda NEED+250,x
+    sta CNEED+250,x
+    lda NEED+500,x
+    sta CNEED+500,x
+    lda NEED+750,x
+    sta CNEED+750,x
+    lda GLY,x
+    sta CNEED+&400,x
+    lda GLY+250,x
+    sta CNEED+&400+250,x
+    lda GLY+500,x
+    sta CNEED+&400+500,x
+    lda GLY+750,x
+    sta CNEED+&400+750,x
+    dex
+    cpx #&FF
+    bne l
+    jsr bg_key
+    sta ckey
+    lda #&FF            \ the texture is gone
+    sta texb
+    rts
+}
+
+.clear_need
+{
+    lda #0
+    ldx #249
+.l  sta NEED,x
+    sta NEED+250,x
+    sta NEED+500,x
+    sta NEED+750,x
+    dex
+    cpx #&FF
+    bne l
+    sta NEED+1000
+    ldx #24
+.h  lda #' '
+    sta HOLD,x
+    lda #40
+    sta GL,x
+    lda #0
+    sta GR,x
+    dex
+    bpl h
+    rts
+}
+\ clear every row's cells outside its globe span GL..GR
+.part_clear
+{
+    ldx #24
+.r  lda rowcell_lo,x
+    sta ptr
+    lda rowcell_hi,x
+    clc
+    adc #HI(NEED)
+    sta ptr+1
+    lda #0
+    ldy GL,x
+    beq b
+    dey
+.a  sta (ptr),y
+    dey
+    bpl a
+.b  ldy GR,x
+    cpy #39
+    bcs n
+    iny
+.c  sta (ptr),y
+    iny
+    cpy #40
+    bcc c
+.n  dex
+    bpl r
+    rts
+}
+
+.draw_stars
+{
+    ldx #NSTARS-1
+.l  ldy star_row,x      \ not inside a globe row's span
+    lda star_off_lo,x
+    sec
+    sbc rowcell_lo,y
+    cmp GL,y
+    bcc ok
+    sta t0
+    lda GR,y
+    cmp t0
+    bcs nx
+.ok lda star_off_lo,x
+    sta ptr
+    lda star_off_hi,x
+    clc
+    adc #HI(NEED)
+    sta ptr+1
+    ldy #0
+    lda #7
+    sta (ptr),y
+    lda ptr+1
+    adc #4
+    sta ptr+1
+    lda star_gly,x
+    sta (ptr),y
+.nx dex
+    bpl l
+    rts
+}
+
+\ planet positions (system coordinates) for the current view, from the
+\ 64-entry orbit tables, interpolated by the mean anomaly
+.positions
+{
+    lda #0
+    sta posx
+    sta posy
+    ldx #1
+.l  stx t5
+    lda view
+    beq w
+    cpx #5
+    bcs off
+    lda orbi_lo-1,x
+    sta ptr
+    lda orbi_hi-1,x
+    sta ptr+1
+    jmp g
+.off
+    lda #&80            \ not in this view
+    sta posx,x
+    jmp nx
+.w  lda orbw_lo-1,x
+    sta ptr
+    lda orbw_hi-1,x
+    sta ptr+1
+.g  lda macc3-1,x       \ index = top 6 bits, fraction = next 8
+    lsr a               \ (the accumulators start at Mercury)
+    lsr a
+    sta t0
+    lda macc3-1,x
+    and #3
+    sta t1
+    lda macc2-1,x
+    lsr t1
+    ror a
+    lsr t1
+    ror a
+    sta t2              \ fraction
+    ldy t0
+    jsr interp
+    ldx t5
+    sta posx,x
+    lda t0
+    clc
+    adc #64
+    tay
+    jsr interp
+    ldx t5
+    jsr tilty
+    sta posy,x
+.nx inx
+    cpx #9
+    bne l
+    lda posx+3          \ the Moon sits with the Earth
+    sta posx+9
+    lda posy+3
+    sta posy+9
+    rts
+}
+\ A = (ptr),Y + ((ptr),Y+1 - (ptr),Y) * t2 / 256, wrapping 63 -> 0
+.interp
+{
+    lda (ptr),y
+    sta t3
+    tya
+    and #64
+    sta t4
+    iny
+    tya
+    and #63
+    ora t4
+    tay
+    lda (ptr),y
+    sec
+    sbc t3
+    beq z
+    bmi neg
+    sta mul_a
+    lda t2
+    sta mul_b
+    lda mul_a
+    jsr mul8
+    clc
+    adc t3
+    rts
+.neg
+    eor #&FF
+    clc
+    adc #1
+    sta mul_a
+    lda t2
+    sta mul_b
+    lda mul_a
+    jsr mul8
+    sta t4
+    lda t3
+    sec
+    sbc t4
+    rts
+.z  lda t3
+    rts
+}
+\ tilted view: y / 2
+.tilty
+{
+    ldy tilt
+    beq r
+    cmp #&80
+    ror a
+.r  rts
+}
+
+\ zoom transform for this frame: e = ease(zs), z = 2^(e * zlog / 256 / 64),
+\ origin O = lerp(centre + Q, centre, e), MULZ[d] = d * z / 256
+.zoom_setup
+{
+    ldx zs
+    lda ease,x
+    sta ee
+    ldx cur
+    lda posx,x
+    sta qx
+    lda posy,x
+    sta qy
+    lda zs
+    bne z1
+    lda #0
+    sta qx
+    sta qy
+.z1 \ q = ee * zlog / 256  (zlog up to ~320: low byte and the high bit)
+    lda body_zlog,x
+    sta mul_b
+    lda ee
+    jsr mul8
+    sta t0              \ q low part
+    lda #0
+    sta t1
+    ldx cur
+    lda body_zloghi,x   \ zlog >= 256: add e
+    beq z2
+    lda t0
+    clc
+    adc ee
+    sta t0
+    bcc z2
+    inc t1
+.z2 \ z = exp2[q & 63] << (q >> 6)
+    lda t0
+    and #63
+    tay
+    lda exp2_lo,y
+    sta zf
+    lda exp2_hi,y
+    sta zf+1
+    lda t1
+    lsr a
+    lda t0
+    ror a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    tay
+    beq z4
+.z3 asl zf
+    rol zf+1
+    dey
+    bne z3
+.z4 \ origin: Ox = CX+qx + (CX - (CX+qx)) * e / 256 = CX + qx - qx*e/256
+    lda qx
+    jsr scale_e
+    sta t2
+    lda qx
+    sec
+    sbc t2
+    jsr sext
+    clc
+    adc #CX
+    sta ox
+    txa
+    adc #0
+    sta ox+1
+    lda qy
+    jsr scale_e
+    sta t2
+    lda qy
+    sec
+    sbc t2
+    jsr sext
+    clc
+    adc #CY
+    sta oy
+    txa
+    adc #0
+    sta oy+1
+    \ MULZ[d] for d = 0..127 (unchanged z: keep the table)
+    lda zf
+    cmp mzlast
+    bne mnew
+    lda zf+1
+    cmp mzlast+1
+    beq mdone
+.mnew
+    lda zf
+    sta mzlast
+    lda zf+1
+    sta mzlast+1
+    lda #0
+    sta t0
+    sta t1
+    sta t2
+    ldx #0
+.mz lda t1
+    sta mulz_lo,x
+    lda t2
+    sta mulz_hi,x
+    clc
+    lda t0
+    adc zf
+    sta t0
+    lda t1
+    adc zf+1
+    sta t1
+    bcc m2
+    inc t2
+.m2 inx
+    bpl mz
+.mdone
+    rts
+}
+\ A (signed) * ee / 256, signed result
+.scale_e
+{
+    cmp #&80
+    bcs neg
+    sta mul_a
+    lda ee
+    sta mul_b
+    lda mul_a
+    jmp mul8
+.neg
+    eor #&FF
+    clc
+    adc #1
+    sta mul_a
+    lda ee
+    sta mul_b
+    lda mul_a
+    jsr mul8
+    eor #&FF
+    clc
+    adc #1
+    rts
+}
+\ sign-extend A into X (high byte)
+.sext
+{
+    ldx #0
+    cmp #&80
+    bcc r
+    dex
+.r  rts
+}
+
+\ transform a system-coordinate delta d (A, signed) by MULZ: result in t0/t1
+.xform
+{
+    cmp #&80
+    bcs neg
+    tax
+    lda mulz_lo,x
+    sta t0
+    lda mulz_hi,x
+    sta t1
+    rts
+.neg
+    eor #&FF
+    clc
+    adc #1
+    bpl ok
+    lda #127
+.ok tax
+    lda #0
+    sec
+    sbc mulz_lo,x
+    sta t0
+    lda #0
+    sbc mulz_hi,x
+    sta t1
+    rts
+}
+\ screen position of system point (A = x, Y = y) into px, py (16-bit)
+.to_screen
+{
+    sty t6
+    sec
+    sbc qx
+    bvc a1
+    lda #&81            \ overflow: far away
+.a1 jsr xform
+    clc
+    lda t0
+    adc ox
+    sta px
+    lda t1
+    adc ox+1
+    sta px+1
+    lda t6
+    sec
+    sbc qy
+    bvc a2
+    lda #&81
+.a2 jsr xform
+    clc
+    lda t0
+    adc oy
+    sta py
+    lda t1
+    adc oy+1
+    sta py+1
+    rts
+}
+
+\ plot pixel px, py in colour pcol (clipped); X and Y kept
+.plot
+{
+    lda px+1
+    bne r
+    lda py+1
+    bne r
+    lda px
+    cmp #2
+    bcc r
+    cmp #80
+    bcs r
+    lda py
+    cmp gpy0
+    bcc r
+    cmp gpy1
+    beq ok
+    bcs r
+.ok stx t4
+    sty t5
+    ldy py
+    lda rowoff_lo,y
+    sta ptr
+    clc
+    lda rowoff_hi,y
+    adc #HI(NEED)
+    sta ptr+1
+    lda px
+    and #1
+    ora ymod,y
+    tax
+    lda px
+    lsr a
+    tay
+    lda (ptr),y
+    cmp pcol            \ empty, or another colour: the cell is taken over
+    beq has
+    lda pcol
+    sta (ptr),y
+    lda ptr+1
+    clc
+    adc #4
+    sta ptr+1
+    lda pixbit,x
+    ora #&A0
+    sta (ptr),y
+    ldx t4
+    ldy t5
+.r  rts
+.has
+    lda pcol
+    sta (ptr),y
+    lda ptr+1
+    clc
+    adc #4
+    sta ptr+1
+    lda pixbit,x
+    ora (ptr),y
+    sta (ptr),y
+    ldx t4
+    ldy t5
+    rts
+}
+
+\ plot px, py (8-bit, x on screen) in pcol: rows outside gpy0..gpy1 skipped
+.plot8
+{
+    ldy py
+    cpy gpy0
+    bcc r
+    cpy gpy1
+    beq ok
+    bcs r
+.ok lda rowoff_lo,y
+    sta ptr
+    lda rowoff_hi,y
+    clc
+    adc #HI(NEED)
+    sta ptr+1
+    adc #4
+    sta ptr3+1
+    lda ptr
+    sta ptr3
+    lda px
+    and #1
+    ora ymod,y
+    tax
+    lda px
+    lsr a
+    tay
+    lda (ptr),y
+    cmp pcol
+    beq has
+    lda #&A0
+    sta (ptr3),y
+.has
+    lda pcol
+    sta (ptr),y
+    lda pixbit,x
+    ora (ptr3),y
+    sta (ptr3),y
+.r  rts
+}
+
+\ the system: orbits, the Sun, the planets (all through the zoom transform)
+.draw_system
+{
+    lda zs
+    bne o0
+    jsr bg_key
+    cmp ckey
+    bne o0
+    jmp skipsun         \ already there from the cache
+.o0 lda orbits
+    bne o1
+    jmp save
+.o1
+    lda #4
+    sta pcol
+    ldx #1
+.ol stx t7
+    lda view
+    beq w
+    cpx #5
+    bcc o2
+    jmp on
+.o2
+    lda orbi_lo-1,x
+    sta ptr2
+    lda orbi_hi-1,x
+    sta ptr2+1
+    lda dotstep_inner-1,x
+    jmp g
+.w  lda orbw_lo-1,x
+    sta ptr2
+    lda orbw_hi-1,x
+    sta ptr2+1
+    lda dotstep_whole-1,x
+.g  ldy zs              \ zooming: every 4th point only
+    beq g1
+    lda #4
+.g1 sta t3
+    ldy #0
+.dl sty t2
+    lda (ptr2),y
+    sta t5
+    tya
+    ora #64
+    tay
+    lda (ptr2),y
+    jsr tilty
+    ldx zs
+    bne slow
+    clc                 \ not zooming: screen = centre + p (all on screen)
+    adc #CY
+    sta py
+    lda t5
+    clc
+    adc #CX
+    sta px
+    jsr plot8
+    jmp dn
+.slow
+    tay
+    lda t5
+    jsr to_screen
+    jsr plot
+.dn lda t2
+    clc
+    adc t3
+    tay
+    cpy #64
+    bcs on
+    jmp dl
+.on ldx t7
+    inx
+    cpx #9
+    beq save
+    jmp ol
+.save
+    lda zs
+    bne planets
+    jsr draw_sun
+    jsr bg_save
+    jmp skipsun
+.planets
+    lda zs              \ zooming: the Sun unless it is the target
+    beq skipsun
+    lda cur
+    beq skipsun
+    jsr draw_sun
+.skipsun
+    ldx #1
+.pl stx t7
+    lda posx,x
+    cmp #&80
+    beq pn
+    lda zs
+    beq sy
+    cpx cur             \ the zoom target is drawn by draw_target
+    beq pn
+    bne pd
+.sy cpx sel             \ selected: blink
+    bne pd
+    lda vframes
+    and #16
+    bne pn
+.pd lda body_dotcol,x
+    sta pcol
+    ldy posy,x
+    lda posx,x
+    jsr to_screen
+    jsr plot
+    ldx t7
+    lda dotsize,x
+    beq pn
+    inc px
+    jsr plot
+    ldx t7
+    lda dotsize,x
+    cmp #2
+    bne pn
+    inc py
+    jsr plot
+    dec px
+    jsr plot
+.pn ldx t7
+    inx
+    cpx #9
+    bne pl
+    \ system view: blink the Sun when it is selected
+    rts
+}
+\ the Sun in the system: a disc of radius 3 * z
+.draw_sun
+{
+    lda #0
+    tay
+    jsr to_screen
+    lda #3
+    sta pcol
+    lda zf              \ radius = 3 * z (8.8) rounded
+    sta t0
+    lda zf+1
+    sta t1
+    lda t0
+    asl a
+    rol t1
+    adc zf
+    sta t0
+    lda t1
+    adc zf+1
+    sta t1
+    lda t0
+    asl a
+    lda t1
+    adc #0
+    ldx t1
+    cpx #100
+    bcc rok
+    lda #100
+.rok jmp fill_disc
+}
+.dotsize EQUB 0,0,1,1,0,2,2,1,1,0
+
+\ the zoom target: a flat disc while small, then the textured globe
+.draw_target
+{
+    ldx cur
+    lda posx,x
+    ldy posy,x
+    jsr to_screen
+    \ radius = r_sys * z (8.8): Sun 3, others 1
+    lda zf
+    sta t0
+    lda zf+1
+    sta t1
+    ldx cur
+    bne one
+    lda t0
+    asl a
+    rol t1
+    adc zf
+    sta t0
+    lda t1
+    adc zf+1
+    sta t1
+.one lda t0
+    asl a
+    lda t1
+    adc #0
+    ldx cur
+    cmp body_rfull,x
+    bcc rr1
+    lda body_rfull,x
+.rr1 sta gR
+    cmp #4
+    bcs globe
+    lda body_dotcol,x
+    sta pcol
+    lda gR
+    jmp fill_disc
+.globe
+    lda px
+    sta gcx
+    lda px+1
+    sta gcx+1
+    lda py
+    sta gcy
+    lda py+1
+    sta gcy+1
+    jmp draw_globe
+}
+
+\ flat disc, centre px/py, vertical radius A, colour pcol
+.fill_disc
+{
+    sta t7
+    lda px
+    sta dcx
+    lda px+1
+    sta dcx+1
+    lda py
+    sta dcy
+    lda py+1
+    sta dcy+1
+    lda t7
+    cmp #2
+    bcs big
+    \ radius 0/1: a 2x2 dot
+    jsr plot
+    inc px
+    jsr plot
+    inc py
+    jsr plot
+    dec px
+    jmp plot
+.big
+    \ rows dy = -r .. r-1; half-width n = round(r/1.1 * sq1[(2|dy+.5|)*128/r])
+    lda t7
+    sta mul_a
+    lda #ASPK
+    sta mul_b
+    lda mul_a
+    jsr mul8
+    sta drx_hi
+    lda mul_lo
+    sta drx_lo
+    lda #0
+    sec
+    sbc t7
+    sta ddy             \ dy (signed)
+.row
+    lda ddy             \ |2dy+1|
+    asl a
+    clc
+    adc #1
+    bpl p
+    eor #&FF
+    clc
+    adc #1
+.p  sta dnum            \ * 128 / r
+    lda #0
+    sta dnum+1
+    ldx #7
+.s7 asl dnum
+    rol dnum+1
+    dex
+    bne s7
+    lda t7
+    jsr div16
+    lda dnum+1
+    beq q1
+    lda #255
+    bne q2
+.q1 lda dnum
+.q2 tax
+    lda sq1,x           \ n = rx * sq1 / 256
+    sta t4
+    sta mul_b
+    lda drx_hi
+    jsr mul8
+    sta t6
+    lda mul_lo
+    sta t5
+    lda t4
+    sta mul_b
+    lda drx_lo
+    jsr mul8
+    clc
+    adc t5
+    lda t6
+    adc #0
+    sta t6              \ n (pixels each side), ignoring rounding
+    beq nrow
+    \ py = dcy + dy ; px from dcx - n to dcx + n - 1
+    lda ddy
+    jsr sext
+    clc
+    adc dcy
+    sta py
+    txa
+    adc dcy+1
+    sta py+1
+    lda dcx
+    sec
+    sbc t6
+    sta px
+    lda dcx+1
+    sbc #0
+    sta px+1
+    lda t6
+    asl a
+    sta t3
+.pix
+    jsr plot
+    inc px
+    bne pi2
+    inc px+1
+.pi2 dec t3
+    bne pix
+.nrow
+    inc ddy
+    lda ddy
+    cmp t7
+    beq fd
+    jmp row
+.fd rts
+}
+
+INCLUDE "globe.6502"
+INCLUDE "encode.6502"
+INCLUDE "text.6502"
+
+\ ---------------------------------------------------------------- keys
+K_LEFT=0 : K_RIGHT=1 : K_UP=2 : K_DOWN=3 : K_SPACE=4 : K_RETURN=5
+K_COMMA=6 : K_PERIOD=7 : K_R=8 : K_P=9 : K_N=10 : K_V=11 : K_T=12
+K_O=13 : K_I=14 : K_F=15 : K_Q=16 : K_ESC=17 : K_S=18 : K_M=19
+K_D0=20
+NKEYS=30
+.keycodes                   \ internal key numbers
+    EQUB &19,&79,&39,&29        \ cursor left right up down
+    EQUB &62,&49                \ SPACE RETURN
+    EQUB &66,&67,&33,&37,&55    \ , . R P N
+    EQUB &63,&23,&36,&25,&43    \ V T O I F
+    EQUB &10,&70,&51,&65        \ Q ESCAPE S M
+    EQUB &27,&30,&31,&11,&12,&13,&34,&24,&15,&26   \ 0-9
+
+INCLUDE "data.6502"
+
+.code_end
+PRINT "SYM chrtab ", ~chrtab
+PRINT "SYM diffrot ", ~diffrot
+PRINT "code+data: ", ~start, "-", ~code_end, " (", code_end-start, " bytes, ", SCRB-code_end, " free)"
+
+\ ---------------------------------------------------------------- high tables (file SOLARD)
+ORG UBUFEND
+GUARD SCRA
+.datahi
+INCLUDE "datahi.6502"
+.diffrot                    \ Sun: relative angular speed by texture row
+FOR v, 0, 63
+    EQUB INT(255 * (1 - 0.35 * SIN((90 - (v + 0.5) * 180 / 64) * PI / 180) ^ 2))
+NEXT
+.datahi_end
+.osblk    SKIP 18
+.vars
+.palcur   SKIP 16
+.rowbase  SKIP 64
+.rrate_lo SKIP 64
+.rrate_hi SKIP 64
+.racc_lo  SKIP 64
+.racc_hi  SKIP 64
+.dcx      SKIP 2
+.dcy      SKIP 2
+.drx_lo   SKIP 1
+.drx_hi   SKIP 1
+.ddy      SKIP 1
+.hn       SKIP 64       \ per sphere half-row: pixels each side
+.hv       SKIP 64       \ texture row (top half)
+.he_lo    SKIP 64       \ even-pixel u table
+.he_hi    SKIP 64
+.ho_lo    SKIP 64       \ odd-pixel u table
+.ho_hi    SKIP 64
+.rv       SKIP 64       \ scratch: right-half u values
+.HOLD     SKIP 25
+.GL       SKIP 25       \ per char row: globe extents (cells) L-1 .. R+1
+.GR       SKIP 25
+.GLF      SKIP 25       \ protected cells L-1..Lf and Rf-2..R+1 (bg rows)
+.GRF      SKIP 25
+.row1buf  SKIP 40
+.gpy      SKIP 1
+.nvalid   SKIP 1
+.cL       SKIP 1
+.cR       SKIP 1
+.cLf      SKIP 1
+.cRf      SKIP 1
+.gk       SKIP 1
+.gn       SKIP 1
+.wf_lo    SKIP 1
+.wf_hi    SKIP 1
+.rxf_lo   SKIP 1
+.rxf_hi   SKIP 1
+.lin      SKIP 64
+.rl       SKIP 3
+.rh       SKIP 3
+.rk       SKIP 3
+.rvt      SKIP 3
+.rps      SKIP 3
+.rr       SKIP 3
+.ul_lo    SKIP 3
+.ul_hi    SKIP 3
+.ur_lo    SKIP 3
+.ur_hi    SKIP 3
+.tt_lo    SKIP 3
+.tt_hi    SKIP 3
+.vars_end
+PRINT "high tables: ", ~datahi, "-", ~datahi_end, "  vars: ", ~vars, "-", ~vars_end
+
+\ ---------------------------------------------------------------- low variables
+ORG &0900
+GUARD &0D00
+.vars1
+.zpsave   SKIP &90
+.KEYS     SKIP NKEYS
+.KPREV    SKIP NKEYS
+.KLATCH   SKIP NKEYS
+.oldev    SKIP 2
+.quitf    SKIP 1
+.lastflip SKIP 1
+.macc0 SKIP NB
+.macc1 SKIP NB
+.macc2 SKIP NB
+.macc3 SKIP NB
+.step0 SKIP NB
+.step1 SKIP NB
+.step2 SKIP NB
+.step3 SKIP NB
+.day      SKIP 1
+.month    SKIP 1
+.yy       SKIP 1
+.cent     SKIP 1
+.dayfrac  SKIP 1
+.posx     SKIP NB
+.posy     SKIP NB
+.mulz_lo  SKIP 128
+.mulz_hi  SKIP 128
+\ the steady close-up's per character row sampling set-up (draw_globe)
+.c_type   SKIP 25
+.c_rk     SKIP 75       \ 3 per row: rk, rps, rvt of its three pixel rows
+.c_rps    SKIP 75
+.c_rvt    SKIP 75
+.c_bm     SKIP 25
+.c_bc     SKIP 25
+.c_s      SKIP 25
+.c_e      SKIP 25
+.vars1_end
+PRINT "low vars: ", ~vars1, "-", ~vars1_end
+
+PRINT "SYM render ", ~render
+PRINT "SYM encode ", ~encode
+PRINT "SYM draw_globe ", ~draw_globe
+PRINT "SYM gen_sphere ", ~gen_sphere
+PRINT "SYM draw_system ", ~draw_system
+PRINT "SYM draw_text ", ~draw_text
+PRINT "SYM clear_need ", ~clear_need
+PRINT "SYM load_body ", ~load_body
+PRINT "SYM flip ", ~flip
+PRINT "VAR fpsv ", ~fpsv
+PRINT "VAR fcount ", ~fcount
+PRINT "VAR zs ", ~zs
+PRINT "VAR cur ", ~cur
+PRINT "VAR sel ", ~sel
+PRINT "VAR zdir ", ~zdir
+PRINT "VAR backhi ", ~backhi
+PRINT "VAR speed ", ~speed
+PRINT "VAR day ", ~day
+
+SAVE "SOLAR", start, code_end, &FF0000 OR start, &FF0000 OR start
+SAVE "SOLARD", datahi, datahi_end
+ORG &0480
+GUARD &0800
+.datatext
+INCLUDE "datatext.6502"
+.datatext_end
+PRINT "text: ", ~datatext, "-", ~datatext_end
+SAVE "SOLART", datatext, datatext_end
+FOR i, 0, 9
+    PUTFILE "../build/t" + STR$(i) + ".bin", "T" + STR$(i), 0
+NEXT
+PUTTEXT "boot.txt", "!BOOT", 0, 0

@@ -1,0 +1,10 @@
+[submodule "vendor/jsbeeb"]
+	path = vendor/jsbeeb
+	url = https://github.com/mattgodbolt/jsbeeb.git
+	ignore = dirty
+[submodule "vendor/beebasm-src"]
+	path = vendor/beebasm-src
+	url = https://github.com/stardot/beebasm.git
+[submodule "vendor/MMB_Utils"]
+	path = vendor/MMB_Utils
+	url = https://github.com/sweharris/MMB_Utils.git

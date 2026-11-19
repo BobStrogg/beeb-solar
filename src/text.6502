@@ -1,0 +1,261 @@
+\ ============================================================================
+\  Text rows: the title / date / speed line, the system view's key line, and
+\  a close-up's double-height name and facts.
+\ ============================================================================
+
+\ ptr3 = back buffer row A, filled with spaces
+.tx_row
+{
+    tax
+    lda rowcell_lo,x
+    sta ptr3
+    lda rowcell_hi,x
+    clc
+    adc backhi
+    sta ptr3+1
+    ldy #39
+    lda #' '
+.l  sta (ptr3),y
+    dey
+    bpl l
+    rts
+}
+\ string at (ptr) to the row at column Y; Y advances
+.tx_str
+{
+    sty t0
+    ldy #0
+.l  lda (ptr),y
+    beq r
+    sty t1
+    ldy t0
+    sta (ptr3),y
+    inc t0
+    ldy t1
+    iny
+    bne l
+.r  ldy t0
+    rts
+}
+.tx_ch
+{
+    sta (ptr3),y
+    iny
+    rts
+}
+\ two decimal digits of A (0-99)
+.tx_2d
+{
+    ldx #'0'
+.l  cmp #10
+    bcc d
+    sbc #10
+    inx
+    bne l
+.d  pha
+    txa
+    jsr tx_ch
+    pla
+    ora #'0'
+    jmp tx_ch
+}
+.tx_date
+{
+    lda cent
+    jsr tx_2d
+    lda yy
+    jsr tx_2d
+    lda #'-'
+    jsr tx_ch
+    lda month
+    jsr tx_2d
+    lda #'-'
+    jsr tx_ch
+    lda day
+    jmp tx_2d
+}
+\ "+25d/s", "-0.8d/s" or "PAUSED"
+.tx_speed
+{
+    lda paused
+    beq go
+    lda #LO(s_paused)
+    sta ptr
+    lda #HI(s_paused)
+    sta ptr+1
+    jmp tx_str
+.go lda #'+'
+    ldx tdir
+    beq f
+    lda #'-'
+.f  jsr tx_ch
+    lda speed
+    asl a
+    asl a
+    adc speed           \ * 5
+    tax
+    lda #5
+    sta t2
+.l  lda speeds,x
+    cmp #' '
+    beq sk
+    jsr tx_ch
+.sk inx
+    dec t2
+    bne l
+    lda #'/'
+    jsr tx_ch
+    lda #'s'
+    jmp tx_ch
+}
+.tx_fps
+{
+    lda showfps
+    beq r
+    lda fpsv
+    jsr tx_2d
+    lda #'f'
+    jsr tx_ch
+    lda #'p'
+    jsr tx_ch
+    lda #'s'
+    jmp tx_ch
+.r  rts
+}
+
+.draw_text
+{
+    lda info
+    bne on
+    rts
+.on lda zs
+    cmp #255
+    bne sys0
+    lda zdir
+    beq body
+.sys0
+    jmp sys
+.body
+    \ ---- close-up: double-height name, date, speed; two lines of facts
+    lda #0
+    jsr tx_row
+    ldy #0
+    lda #&8D
+    jsr tx_ch
+    ldx cur
+    lda body_titlecol,x
+    jsr tx_ch
+    lda name_lo,x
+    sta ptr
+    lda name_hi,x
+    sta ptr+1
+    jsr tx_str
+    ldy #10
+    lda #&8C
+    jsr tx_ch
+    lda #&87
+    jsr tx_ch
+    jsr tx_date
+    ldy #23
+    lda #&86
+    jsr tx_ch
+    jsr tx_speed
+    ldy #34
+    jsr tx_fps
+    ldy #39             \ row 1 = row 0 (the lower half of the name)
+.cp lda (ptr3),y
+    sta row1buf,y
+    dey
+    bpl cp
+    lda #1
+    jsr tx_row
+    ldy #39
+.cp2 lda row1buf,y
+    sta (ptr3),y
+    dey
+    bpl cp2
+    lda #23
+    jsr tx_row
+    ldy #0
+    lda #&86
+    jsr tx_ch
+    ldx cur
+    lda facta_lo,x
+    sta ptr
+    lda facta_hi,x
+    sta ptr+1
+    jsr tx_str
+    lda #24
+    jsr tx_row
+    ldy #0
+    lda #&87
+    jsr tx_ch
+    ldx cur
+    lda factb_lo,x
+    sta ptr
+    lda factb_hi,x
+    sta ptr+1
+    jmp tx_str
+.sys
+    \ ---- system view: title, date, speed; keys and the selected body
+    lda #0
+    jsr tx_row
+    ldy #0
+    lda #&83
+    jsr tx_ch
+    lda #LO(s_whole)
+    ldx #HI(s_whole)
+    ldy view
+    beq w
+    lda #LO(s_inner)
+    ldx #HI(s_inner)
+.w  sta ptr
+    stx ptr+1
+    ldy #1
+    jsr tx_str
+    ldy #14
+    lda #&87
+    jsr tx_ch
+    jsr tx_date
+    ldy #25
+    lda #&86
+    jsr tx_ch
+    jsr tx_speed
+    ldy #35
+    jsr tx_fps
+    lda #24
+    jsr tx_row
+    lda #LO(s_keys)
+    sta ptr
+    lda #HI(s_keys)
+    sta ptr+1
+    ldy #0
+    jsr tx_str
+    ldx sel
+    lda zs
+    beq s1
+    ldx cur
+    lda nextb
+    bmi s1
+    tax
+.s1 lda body_titlecol,x
+    jsr tx_ch
+    lda name_lo,x
+    sta ptr
+    lda name_hi,x
+    sta ptr+1
+    jmp tx_str
+}
+.s_whole  EQUS "SOLAR SYSTEM", 0
+.s_inner  EQUS "INNER PLANETS", 0
+.s_paused EQUS "PAUSED", 0
+.s_keys   EQUB &86 : EQUS "<>" : EQUB &87 : EQUS "pick" : EQUB &86 : EQUS "SPACE" : EQUB &87 : EQUS "zoom" : EQUB &86 : EQUS "V" : EQUB &87 : EQUS "view", 0
+.speeds   EQUS " 0.8d 1.6d 3.1d 6.2d12.5d  25d  50d 100d 200d 400d 800d"
+.rowcell_lo
+FOR r, 0, 24
+    EQUB LO(r * 40)
+NEXT
+.rowcell_hi
+FOR r, 0, 24
+    EQUB HI(r * 40)
+NEXT

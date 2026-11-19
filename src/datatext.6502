@@ -1,0 +1,42 @@
+.name0 EQUS "SUN", 0
+.name1 EQUS "MERCURY", 0
+.name2 EQUS "VENUS", 0
+.name3 EQUS "EARTH", 0
+.name4 EQUS "MARS", 0
+.name5 EQUS "JUPITER", 0
+.name6 EQUS "SATURN", 0
+.name7 EQUS "URANUS", 0
+.name8 EQUS "NEPTUNE", 0
+.name9 EQUS "MOON", 0
+.facta0 EQUS "G2V star  Radius 696,000 km", 0
+.factb0 EQUS "Surface 5,500C  Core 15 million C", 0
+.facta1 EQUS "0.39 AU from Sun  Radius 2,440 km", 0
+.factb1 EQUS "Day 176 d  Year 88 d  Moons 0", 0
+.facta2 EQUS "0.72 AU from Sun  Radius 6,052 km", 0
+.factb2 EQUS "Day 243 d retro  Year 225 d  Moons 0", 0
+.facta3 EQUS "1.00 AU from Sun  Radius 6,371 km", 0
+.factb3 EQUS "Day 24 h  Year 365.25 d  Moons 1", 0
+.facta4 EQUS "1.52 AU from Sun  Radius 3,390 km", 0
+.factb4 EQUS "Day 24.6 h  Year 687 d  Moons 2", 0
+.facta5 EQUS "5.20 AU from Sun  Radius 69,911 km", 0
+.factb5 EQUS "Day 9.9 h  Year 11.9 y  Moons 95", 0
+.facta6 EQUS "9.54 AU from Sun  Radius 58,232 km", 0
+.factb6 EQUS "Day 10.7 h  Year 29.5 y  Moons 274", 0
+.facta7 EQUS "19.2 AU from Sun  Radius 25,362 km", 0
+.factb7 EQUS "Day 17.2 h retro  Year 84 y  Moons 28", 0
+.facta8 EQUS "30.1 AU from Sun  Radius 24,622 km", 0
+.factb8 EQUS "Day 16.1 h  Year 165 y  Moons 16", 0
+.facta9 EQUS "384,400 km from Earth  Radius 1,737 km", 0
+.factb9 EQUS "Day 27.3 d  Orbit 27.3 d  Tidal lock", 0
+.name_lo
+    EQUB LO(name0),LO(name1),LO(name2),LO(name3),LO(name4),LO(name5),LO(name6),LO(name7),LO(name8),LO(name9)
+.name_hi
+    EQUB HI(name0),HI(name1),HI(name2),HI(name3),HI(name4),HI(name5),HI(name6),HI(name7),HI(name8),HI(name9)
+.facta_lo
+    EQUB LO(facta0),LO(facta1),LO(facta2),LO(facta3),LO(facta4),LO(facta5),LO(facta6),LO(facta7),LO(facta8),LO(facta9)
+.facta_hi
+    EQUB HI(facta0),HI(facta1),HI(facta2),HI(facta3),HI(facta4),HI(facta5),HI(facta6),HI(facta7),HI(facta8),HI(facta9)
+.factb_lo
+    EQUB LO(factb0),LO(factb1),LO(factb2),LO(factb3),LO(factb4),LO(factb5),LO(factb6),LO(factb7),LO(factb8),LO(factb9)
+.factb_hi
+    EQUB HI(factb0),HI(factb1),HI(factb2),HI(factb3),HI(factb4),HI(factb5),HI(factb6),HI(factb7),HI(factb8),HI(factb9)

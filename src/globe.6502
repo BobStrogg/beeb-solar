@@ -1,0 +1,992 @@
+\ ============================================================================
+\  Textured globes. gen_sphere builds, for the current radius, a longitude
+\  table per pixel of the top half (the bottom half mirrors it), split into
+\  even and odd pixels so the sampler indexes them by character cell. Each
+\  character row of the globe is then laid out for the encoder:
+\
+\    L-1        colour B (the row's base colour), blank
+\    L..Lf-1    limb cells: the disc's own pixels in B on black
+\    Lf         &9D new background: B from here on
+\    Lf+1..Rf-3 texture: pixels whose material is not the row's base, in the
+\               colour of the cell's last such pixel, on background B
+\    Rf-2, Rf-1 solid B (so the held graphic below is solid)
+\    Rf         &9C black background
+\    Rf+1..R    limb cells, R+1 blank
+\
+\  Hold graphics (&9E in column 0) makes every control cell repeat the cell
+\  before it, so colour changes cost no gaps.
+\ ============================================================================
+
+.gen_sphere
+{
+    lda gR
+    sta lastR
+    sta mul_b
+    lda #ASPK
+    jsr mul8
+    sta rxf_hi
+    lda mul_lo
+    sta rxf_lo
+    lda #LO(UBUF)
+    sta ptr3
+    lda #HI(UBUF)
+    sta ptr3+1
+    lda #0
+    sta gk
+.row
+    \ t = (2(R-k)-1) * 128 / R : row centre's distance from the equator, /R
+    lda gR
+    sec
+    sbc gk
+    asl a
+    sec
+    sbc #1
+    lsr a               \ (y2 * 128) = y2 >> 1 in the high byte, low bit << 7
+    sta dnum+1
+    lda #0
+    ror a
+    sta dnum
+    lda gR
+    jsr div16
+    ldx dnum
+    ldy gk
+    lda vlat,x
+    sta hv,y
+    lda sq1,x
+    sta t4
+    \ w = rx * sq1 / 256  (8.8)
+    sta mul_b
+    lda rxf_hi
+    jsr mul8
+    sta wf_hi
+    lda mul_lo
+    sta wf_lo
+    lda t4
+    sta mul_b
+    lda rxf_lo
+    jsr mul8
+    clc
+    adc wf_lo
+    sta wf_lo
+    bcc w1
+    inc wf_hi
+.w1 \ n = round(w)
+    lda wf_lo
+    cmp #128
+    lda wf_hi
+    adc #0
+    ldy gk
+    sta hn,y
+    sta gn
+    lda ptr3
+    sta he_lo,y
+    lda ptr3+1
+    sta he_hi,y
+    lda gn
+    bne nz
+    lda ptr3
+    sta ho_lo,y
+    lda ptr3+1
+    sta ho_hi,y
+    jmp nxt
+.nz clc
+    lda ptr3
+    adc gn
+    sta ho_lo,y
+    lda ptr3+1
+    adc #0
+    sta ho_hi,y
+    \ step = 2^24 / w (8.8 per pixel) from the quarter-pixel reciprocal table
+    lda wf_lo
+    sta t0
+    lda wf_hi
+    asl t0
+    rol a
+    asl t0
+    rol a
+    tax
+    lda recip4_lo,x
+    sta t2
+    lda recip4_hi,x
+    sta t3
+    lsr a               \ acc = step / 2
+    sta t1
+    lda t2
+    ror a
+    sta t0
+    lda #0
+    sta t5              \ overflow flag
+    ldy #0
+.rp lda t1
+    ldx t5
+    beq r1
+    lda #255
+.r1 tax
+    lda asin_u,x
+    sta rv,y
+    clc
+    lda t0
+    adc t2
+    sta t0
+    lda t1
+    adc t3
+    sta t1
+    bcc r2
+    lda #1
+    sta t5
+.r2 iny
+    cpy gn
+    bne rp
+    \ line, left to right: j < n: (128 - rv[n-1-j]) & 127, else rv[j-n];
+    \ even j to the even table, odd j to the odd table
+    ldx gn
+    ldy #0
+.l1 dex
+    lda #128
+    sec
+    sbc rv,x
+    and #127
+    sta lin,y
+    iny
+    cpx #0
+    bne l1
+    ldx #0
+.l2 lda rv,x
+    sta lin,y
+    iny
+    inx
+    cpx gn
+    bne l2
+    \ split
+    ldx #0
+    ldy #0
+.sp lda lin,x
+    sta (ptr3),y
+    inx
+    lda lin,x
+    sty t0
+    pha
+    tya
+    clc
+    adc gn
+    tay
+    pla
+    sta (ptr3),y
+    ldy t0
+    iny
+    inx
+    cpy gn
+    bne sp
+    \ ptr3 += 2n
+    lda gn
+    asl a
+    clc
+    adc ptr3
+    sta ptr3
+    bcc nxt
+    inc ptr3+1
+.nxt
+    inc gk
+    lda gk
+    cmp gR
+    beq done
+    jmp row
+.done
+    rts
+}
+
+\ turn the globe: per texture row, rot += rate * elapsed (backwards with time)
+.spin
+{
+    lda paused
+    bne r
+    lda elapsed
+    sta t0
+.e  ldx #60              \ bands of 4 texture rows
+    lda tdir
+    bne b
+.f  clc
+    lda racc_lo,x
+    adc rrate_lo,x
+    sta racc_lo,x
+    lda racc_hi,x
+    adc rrate_hi,x
+    sta racc_hi,x
+    dex
+    dex
+    dex
+    dex
+    bpl f
+    bmi n
+.b  sec
+    lda racc_lo,x
+    sbc rrate_lo,x
+    sta racc_lo,x
+    lda racc_hi,x
+    sbc rrate_hi,x
+    sta racc_hi,x
+    dex
+    dex
+    dex
+    dex
+    bpl b
+.n  dec t0
+    bne e
+.r  rts
+}
+
+\ draw the globe of body cur, radius gR, centre gcx, gcy (screen pixels)
+.draw_globe
+{
+    lda gcx+1
+    bne off
+    lda gcy+1
+    bne off
+    lda gcx
+    bmi off
+    lda gcy
+    bpl on
+.off
+    rts
+.on lda gsteady
+    beq slow
+    jmp fast
+.slow
+    lda gR
+    cmp lastR
+    beq g1
+    jsr gen_sphere
+.g1 jsr spin
+    ldx #24
+.ge lda #40
+    sta GL,x
+    lda #0
+    sta GR,x
+    sta c_type,x
+    dex
+    bpl ge
+    \ character rows gr0..gr1 that the disc reaches
+    lda gr0
+    sta cr
+.crl
+    lda cr
+    asl a
+    adc cr
+    sta gpy             \ first pixel row of this char row
+    ldx #0
+    stx nvalid
+.rlp \ row r = X: d = py - (cy - R)
+    txa
+    clc
+    adc gpy
+    clc
+    adc gR
+    sec
+    sbc gcy
+    bcc empty           \ (d < 0, as an unsigned borrow from py+R-cy)
+    sta t0              \ d
+    lda gR
+    asl a
+    cmp t0
+    bcc empty
+    beq empty
+    lda t0
+    cmp gR
+    bcc top
+    \ bottom half: k = 2R-1-d, v = 63 - hv[k]
+    lda gR
+    asl a
+    sec
+    sbc #1
+    sec
+    sbc t0
+    tay
+    lda #63
+    sec
+    sbc hv,y
+    jmp kv
+.top
+    tay
+    lda hv,y
+.kv sta rvt,x
+    tya
+    sta rk,x
+    lda hn,y
+    beq empty
+    sta t1              \ n
+    \ ps = cx - n (signed), lo = max(ps, 4), hi = min(cx + n - 1, 77)
+    lda gcx
+    sec
+    sbc t1
+    sta rps,x
+    bcc lo4             \ negative
+    cmp #4
+    bcs lok
+.lo4 lda #4
+.lok sta rl,x
+    lda gcx
+    clc
+    adc t1
+    sec
+    sbc #1
+    cmp #78
+    bcc hok
+    lda #77
+.hok sta rh,x
+    cmp rl,x
+    bcc empty
+    inc nvalid
+    jmp rn
+.empty
+    lda #255
+    sta rl,x
+    lda #0
+    sta rh,x
+.rn inx
+    cpx #3
+    beq rdone
+    jmp rlp
+.rdone
+    lda nvalid
+    bne some
+    jmp nextcr
+.some
+    \ L = min(rl) >> 1, Rc = max(rh) >> 1, maxl, minh
+    lda rl
+    cmp rl+1
+    bcc m1
+    lda rl+1
+.m1 cmp rl+2
+    bcc m2
+    lda rl+2
+.m2 lsr a
+    sta cL
+    lda rh
+    cmp rh+1
+    bcs m3
+    lda rh+1
+.m3 cmp rh+2
+    bcs m4
+    lda rh+2
+.m4 lsr a
+    sta cR
+    \ base material from the middle row (or any valid one)
+    ldx #1
+    lda rh+1
+    bne bv
+    ldx #0
+    lda rh
+    bne bv
+    ldx #2
+.bv ldy rvt,x
+    lda fgmode
+    bne fgb
+    lda rowbase,y
+    sta Bm
+    tay
+    lda palcur,y
+    sta Bc
+    jmp bset
+.fgb lda #0
+    sta Bm
+    lda palcur+1
+    sta Bc
+.bset
+    \ row pointers
+    ldx cr
+    lda #&9E
+    sta HOLD,x
+    lda rowcell_lo,x
+    sta ptr
+    sta ptr2
+    lda rowcell_hi,x
+    clc
+    adc #HI(NEED)
+    sta ptr+1
+    adc #4
+    sta ptr2+1
+    \ forced cells L-1 and R+1
+    ldy cL
+    dey
+    tya
+    sta GL,x
+    lda Bc
+    sta (ptr),y
+    lda #&A0
+    sta (ptr2),y
+    ldy cR
+    iny
+    tya
+    sta GR,x
+    lda Bc
+    sta (ptr),y
+    lda #&A0
+    sta (ptr2),y
+    lda GR,x            \ default: every cell protected (narrow row)
+    sta GLF,x
+    lda GL,x
+    sta GRF,x
+    \ full cells need all three rows: Lf = (max rl + 1) >> 1, Rf = (min rh - 1) >> 1
+    lda nvalid
+    cmp #3
+    beq full3
+    jmp narrow
+.full3
+    lda rl
+    cmp rl+1
+    bcs m5
+    lda rl+1
+.m5 cmp rl+2
+    bcs m6
+    lda rl+2
+.m6 clc
+    adc #1
+    lsr a
+    sta cLf
+    lda rh
+    cmp rh+1
+    bcc m7
+    lda rh+1
+.m7 cmp rh+2
+    bcc m8
+    lda rh+2
+.m8 sec
+    sbc #1
+    lsr a
+    sta cRf
+    lda fgmode
+    bne fgrow
+    lda cRf
+    sec
+    sbc cLf
+    bcc nar1
+    cmp #3
+    bcs bgrow
+.nar1
+    jmp narrow
+.fgrow
+    lda cRf
+    cmp cLf
+    bcc nar1
+    \ fg row: limbs, then texture over Lf..Rf on black
+    ldx cr
+    lda GL,x
+    sta GLF,x
+    lda GR,x
+    sta GRF,x
+    lda cL
+    ldx cLf
+    jsr limbs
+    lda cRf
+    clc
+    adc #1
+    ldx cR
+    inx
+    jsr limbs
+    lda cLf
+    ldx cRf
+    inx
+    jsr keep
+    jsr sample
+    jmp nextcr
+.bgrow
+    ldx cr
+    lda cLf
+    sta GLF,x
+    lda cRf
+    sec
+    sbc #2
+    sta GRF,x
+    lda cL
+    ldx cLf
+    jsr limbs
+    lda cRf
+    clc
+    adc #1
+    ldx cR
+    inx
+    jsr limbs
+    lda Bc
+    ldy cLf
+    sta (ptr),y
+    lda #&9D
+    sta (ptr2),y
+    ldy cRf
+    lda Bc
+    sta (ptr),y
+    lda #&9C
+    sta (ptr2),y
+    dey
+    lda Bc
+    sta (ptr),y
+    lda #&FF
+    sta (ptr2),y
+    dey
+    lda Bc
+    sta (ptr),y
+    lda #&FF
+    sta (ptr2),y
+    \ texture over Lf+1 .. Rf-3
+    lda cLf
+    clc
+    adc #1
+    sta t0
+    lda cRf
+    sec
+    sbc #2
+    cmp t0
+    beq nextcr
+    tax
+    lda t0
+    jsr keep
+    jsr sample
+    jmp nextcr
+.narrow
+    lda cL
+    ldx cR
+    inx
+    jsr limbs
+.nextcr
+    lda cr
+    cmp gr1
+    beq fin
+    inc cr
+    \ stop below the disc
+    lda cr
+    asl a
+    adc cr
+    sec
+    sbc gR
+    bcc more
+    cmp gcy
+    bcs fin
+.more
+    jmp crl
+.fin
+    lda zs              \ fully in and still: the next frames reuse all this
+    cmp #255
+    bne fc
+    lda zdir
+    bne fc
+    lda #1
+    sta gsteady
+    lda gr0
+    sta gsg0
+    lda gr1
+    sta gsg1
+.fc lda cur             \ the Sun's corona
+    bne r
+    jmp corona
+.r  rts
+\ steady: only the texture is sampled again (limbs and edges are still there)
+.fast
+    jsr spin
+    lda gr0
+    sta cr
+.fl ldx cr
+    lda c_type,x
+    beq fn
+    lda c_bm,x
+    sta Bm
+    lda c_bc,x
+    sta Bc
+    lda rowcell_lo,x
+    sta ptr
+    sta ptr2
+    lda rowcell_hi,x
+    clc
+    adc #HI(NEED)
+    sta ptr+1
+    adc #4
+    sta ptr2+1
+    txa
+    asl a
+    adc cr
+    tay
+    ldx #0
+.f3 lda c_rk,y
+    sta rk,x
+    lda c_rps,y
+    sta rps,x
+    lda c_rvt,y
+    sta rvt,x
+    iny
+    inx
+    cpx #3
+    bne f3
+    ldy cr
+    ldx c_e,y
+    lda c_s,y
+    jsr sample
+.fn lda cr
+    cmp gr1
+    beq fc
+    inc cr
+    jmp fl
+}
+\ remember this row's sampling set-up (A = first cell, X = end, kept)
+.keep
+{
+    pha
+    ldy cr
+    sta c_s,y
+    txa
+    sta c_e,y
+    lda #1
+    sta c_type,y
+    lda Bm
+    sta c_bm,y
+    lda Bc
+    sta c_bc,y
+    tya
+    asl a
+    adc cr
+    tay
+    txa
+    pha
+    ldx #0
+.l  lda rk,x
+    sta c_rk,y
+    lda rps,x
+    sta c_rps,y
+    lda rvt,x
+    sta c_rvt,y
+    iny
+    inx
+    cpx #3
+    bne l
+    pla
+    tax
+    pla
+    rts
+}
+
+\ cells A .. X-1: the disc's own pixels in Bc (limb cells)
+.limbs
+{
+    sta t2
+    stx t3
+.c  lda t2
+    cmp t3
+    bcs r
+    asl a               \ px0 = 2c
+    sta t4
+    lda #0
+    sta pat
+    ldx #2
+.r3 lda t4              \ right pixel then left pixel of row X
+    clc
+    adc #1
+    cmp rl,x
+    bcc o1
+    cmp rh,x
+    beq i1
+    bcs o1
+.i1 lda pixbit_r,x
+    ora pat
+    sta pat
+.o1 lda t4
+    cmp rl,x
+    bcc o2
+    cmp rh,x
+    beq i2
+    bcs o2
+.i2 lda pixbit_l,x
+    ora pat
+    sta pat
+.o2 dex
+    bpl r3
+    ldy t2
+    lda Bc
+    sta (ptr),y
+    lda pat
+    ora #&A0
+    sta (ptr2),y
+    inc t2
+    bne c
+.r  rts
+}
+.pixbit_l EQUB 1,4,16
+.pixbit_r EQUB 2,8,64
+
+\ texture sampler over cells A .. X-1 of the current char row
+BLK = 21
+.sample
+{
+    sta t0
+    stx t1
+    \ per pixel row: left/right u tables (by cell), rotation, texture row
+    ldx #0
+.pr stx t6
+    ldy rk,x
+    lda rps,x           \ m = ps >> 1 (arithmetic), t3 = its sign
+    cmp #&80
+    ror a
+    sta t2
+    lda #0
+    bit t2
+    bpl ps1
+    lda #&FF
+.ps1 sta t3
+    lda rps,x
+    and #1
+    bne odd
+    \ even: UL = E - m, UR = O - m
+    lda he_lo,y
+    sec
+    sbc t2
+    sta ul_lo,x
+    lda he_hi,y
+    sbc t3
+    sta ul_hi,x
+    lda ho_lo,y
+    sec
+    sbc t2
+    sta ur_lo,x
+    lda ho_hi,y
+    sbc t3
+    sta ur_hi,x
+    jmp rt
+.odd \ UL = O - m - 1, UR = E - m
+    lda ho_lo,y
+    clc
+    sbc t2
+    sta ul_lo,x
+    lda ho_hi,y
+    sbc t3
+    sta ul_hi,x
+    lda he_lo,y
+    sec
+    sbc t2
+    sta ur_lo,x
+    lda he_hi,y
+    sbc t3
+    sta ur_hi,x
+.rt lda rvt,x
+    and #&FC
+    tay
+    lda racc_hi,y
+    sta rr,x
+    lda rvt,x
+    lsr a
+    clc
+    adc #HI(TEX)
+    sta tt_hi,x
+    lda #0
+    ror a
+    sta tt_lo,x
+    inx
+    cpx #3
+    beq pd
+    jmp pr
+.pd
+    \ patch the six pixel blocks: pixel p = row p>>1, side p&1
+    ldx #0
+    ldy #0
+.pp txa
+    lsr a
+    sta t4              \ row
+    txa
+    and #1
+    bne right
+    stx t5
+    ldx t4
+    lda ul_lo,x
+    sta blk0+1,y
+    lda ul_hi,x
+    sta blk0+2,y
+    jmp pc
+.right
+    stx t5
+    ldx t4
+    lda ur_lo,x
+    sta blk0+1,y
+    lda ur_hi,x
+    sta blk0+2,y
+.pc lda rr,x
+    sta blk0+4,y
+    lda tt_lo,x
+    sta blk0+9,y
+    lda tt_hi,x
+    sta blk0+10,y
+    lda Bm
+    sta blk0+12,y
+    tya
+    clc
+    adc #BLK
+    tay
+    ldx t5
+    inx
+    cpx #6
+    bne pp
+    lda Bm
+    sta sbb+1
+    lda Bc              \ (fg rows: every set pixel shows)
+    ldy fgmode
+    beq sb1
+    lda #&FF
+.sb1 sta sbc+1
+    lda ptr2
+    sta sg+1
+    lda ptr2+1
+    sta sg+2
+    lda ptr
+    sta sn+1
+    sta sn2+1
+    lda ptr+1
+    sta sn+2
+    sta sn2+2
+    lda t1
+    sta se+1
+    sta se2+1
+    ldx t0
+    \ ---- the cell loop
+.sl clc
+    lda #0
+    sta pat
+.blk0
+FOR p, 0, 5
+    lda &FFFF,x         \ u for this pixel (patched)
+    adc #0              \ + rotation of its texture row (patched)
+    and #127
+    tay
+    lda &FFFF,y         \ material (patched texture row)
+    eor #0              \ the row's base material (patched)
+    beq P%+4
+    sta fgx
+    cmp #1
+    rol pat
+NEXT
+    ldy pat
+    lda chrtab,y
+.sg sta &FFFF,x
+    tya
+    beq em
+    lda fgx
+.sbb eor #0
+    tay
+    lda palcur,y
+.sbc cmp #0
+    beq em
+.sn sta &FFFF,x
+    inx
+.se cpx #0
+    beq sr
+    jmp sl
+.em lda #0
+.sn2 sta &FFFF,x
+    inx
+.se2 cpx #0
+    beq sr
+    jmp sl
+.sr rts
+}
+
+\ the Sun's corona: sparse flickering red and yellow pixels in a ring of
+\ about 5 pixels outside the limb (never in a globe row's own cells)
+.corona
+{
+    lda gR
+    clc
+    adc #6
+    sta t7              \ outer radius
+    sta mul_b
+    lda #ASPK
+    jsr mul8
+    sta t6              \ outer horizontal radius (pixels)
+    lda gr0
+    sta cr
+.l  \ middle pixel row of the char row: dy = |3cr + 1 - cy| (+0.5 ignored)
+    lda cr
+    asl a
+    adc cr
+    adc #1
+    sec
+    sbc gcy
+    bcs p
+    eor #&FF
+    adc #1
+.p  cmp t7
+    bcc p2
+    jmp nx
+.p2
+    \ half-width = rx_out * sq1[dy * 256 / rout]
+    sta dnum+1
+    lda #0
+    sta dnum
+    lda t7
+    jsr div16
+    lda dnum+1
+    beq q
+    lda #255
+    bne q2
+.q  lda dnum
+.q2 tax
+    lda sq1,x
+    sta mul_b
+    lda t6
+    jsr mul8
+    sta t5              \ pixels each side
+    lda gcx
+    sec
+    sbc t5
+    bcs l1
+    lda #0
+.l1 lsr a
+    cmp #1
+    bcs l2
+    lda #1
+.l2 sta t2              \ first corona cell
+    lda gcx
+    clc
+    adc t5
+    lsr a
+    cmp #39
+    bcc l3
+    lda #39
+.l3 sta t3              \ last corona cell
+    ldx cr
+    lda rowcell_lo,x
+    sta ptr
+    sta ptr2
+    lda rowcell_hi,x
+    clc
+    adc #HI(NEED)
+    sta ptr+1
+    adc #4
+    sta ptr2+1
+    ldy t2
+.c  \ skip the globe's own cells GL..GR and anything already drawn
+    tya
+    cmp GL,x
+    bcc c0
+    cmp GR,x
+    bcc sk
+    beq sk
+.c0 lda (ptr),y
+    bne sk
+    jsr rnd
+    sta t4
+    jsr rnd
+    and t4
+    and #&5F
+    beq sk
+    ora #&A0
+    sta (ptr2),y
+    jsr rnd
+    cmp #200
+    lda #1
+    bcc cr1
+    lda #3
+.cr1 sta (ptr),y
+.sk iny
+    cpy t3
+    bcc c
+    beq c
+.nx lda cr
+    cmp gr1
+    beq r
+    inc cr
+    jmp l
+.r  rts
+}
