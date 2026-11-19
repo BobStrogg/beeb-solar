@@ -147,6 +147,7 @@ GUARD SCRB
     sta texb
     sta lastR
     lda #0
+    sta ringR
     sta ckey
     sta mzlast
     sta mzlast+1
@@ -1168,6 +1169,9 @@ GUARD SCRB
     lda gr1
     cmp gsg1
     bne full
+    lda cur             \ Saturn: its rings and stars outside stay put
+    cmp #6
+    beq pos
     jsr part_clear
     jsr draw_stars
     jmp pos
@@ -1998,7 +2002,20 @@ CNEED = TEX
     sta gcy
     lda py+1
     sta gcy+1
-    jmp draw_globe
+    lda gsteady         \ (draw_globe may set it this frame)
+    sta rsteady
+    jsr draw_globe
+    lda cur             \ Saturn: the rings, if the globe is on screen
+    cmp #6
+    bne r
+    lda gcx+1
+    ora gcy+1
+    bne r
+    lda gcx
+    ora gcy
+    bmi r
+    jmp draw_rings
+.r  rts
 }
 
 \ flat disc, centre px/py, vertical radius A, colour pcol
@@ -2120,6 +2137,7 @@ CNEED = TEX
 INCLUDE "globe.6502"
 INCLUDE "encode.6502"
 INCLUDE "text.6502"
+INCLUDE "rings.6502"
 
 \ ---------------------------------------------------------------- keys
 K_LEFT=0 : K_RIGHT=1 : K_UP=2 : K_DOWN=3 : K_SPACE=4 : K_RETURN=5
@@ -2203,6 +2221,25 @@ NEXT
 .ur_hi    SKIP 3
 .tt_lo    SKIP 3
 .tt_hi    SKIP 3
+.ringR    SKIP 1
+.rsteady  SKIP 1
+.rgx      SKIP 1
+.re       SKIP 5
+.rq_lo    SKIP 5
+.rq_hi    SKIP 5
+.rbout    SKIP 1
+.rdy      SKIP 1
+.rfront   SKIP 1
+.ry       SKIP 1
+.ymodv    SKIP 1
+.dpat     SKIP 1
+.i1e      SKIP 1
+.i2s      SKIP 1
+.i2e      SKIP 1
+.i3s      SKIP 1
+.sa       SKIP 1
+.sb       SKIP 1
+.wtab     SKIP 80
 .vars_end
 PRINT "high tables: ", ~datahi, "-", ~datahi_end, "  vars: ", ~vars, "-", ~vars_end
 

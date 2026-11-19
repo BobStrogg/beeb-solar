@@ -40,6 +40,7 @@ to(highout); lohi("exp2", [round(256 * 2 ** (i / 64)) for i in range(64)]); to(l
 # screen row offsets (cell row * 40) for pixel rows 0..74 and (y mod 3)*2
 lohi("rowoff", [(y // 3) * 40 for y in range(75)])
 table("ymod", [(y % 3) * 2 for y in range(75)])
+table("pyrow", [y // 3 for y in range(75)])
 # pixel bit within a sextant char for index (y%3)*2 + (x&1)
 table("pixbit", SEXT)
 
@@ -139,7 +140,14 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 texlen = []
 tsize = 0
 for b, (m, pal, dith, fg) in texs.items():
-    rowbase = [int(np.bincount(m[v], minlength=8).argmax()) for v in range(64)]
+    # the base material of a row: the commonest after dithering (a dithered
+    # material keeps dith/256 of its texels, the rest become material 0)
+    keep = np.array([d / 256 if d else 1.0 for d in dith])
+    def commonest(row):
+        c = np.bincount(row, minlength=8) * keep
+        c[0] += (np.bincount(row, minlength=8) * (1 - keep)).sum()
+        return int(c.argmax())
+    rowbase = [commonest(m[v]) for v in range(64)]
     if b == "earth":
         rowbase = [3 if T.lat[v] > 76 or T.lat[v] < -70 else 0 for v in range(64)]
     if fg: rowbase = [0] * 64

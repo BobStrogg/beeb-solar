@@ -1,0 +1,334 @@
+\ ============================================================================
+\  Saturn's rings: C, B and A rings (with the Cassini division) as filled
+\  elliptical bands, tilted so their far side passes behind the globe and the
+\  near side in front of it. Per |dy| the half-widths of the five band edges
+\  are kept (wtab), rebuilt when the globe's radius changes. Ring pixels
+\  never touch a globe row's limb or edge cells; behind the globe only cells
+\  outside it are drawn, in front also its texture cells. In a steady
+\  close-up only the front part over the texture is redrawn (the rest stays).
+\ ============================================================================
+RTILT = 108                 \ sin(ring opening) * 256 (about 25 degrees)
+.ring_g  EQUB 79, 98, 125, 129, 145      \ edge radius / globe radius * 64
+.ring_d  EQUB %0101, %1111, 0, %1111      \ density by (x + dy) & 3: C, B, gap, A
+.bits4   EQUB 1, 2, 4, 8
+
+.ring_setup
+{
+    lda gR
+    cmp ringR
+    bne go
+    rts
+.go sta ringR
+    sta mul_b
+    lda #ASPK
+    jsr mul8
+    sta rgx                 \ globe radius in x pixels
+    ldx #4
+.e  stx t7
+    lda ring_g,x
+    sta mul_b
+    lda rgx
+    jsr mul8                \ A:mul_lo = rgx * g; e = that >> 6
+    sta t0
+    lda mul_lo
+    asl a
+    rol t0
+    asl a
+    rol t0
+    ldx t7
+    lda t0
+    sta re,x
+    \ q = 9709 / e (idx = dy * q / 16 = (dy / tilt) * 256 / e)
+    lda #LO(9709)
+    sta dnum
+    lda #HI(9709)
+    sta dnum+1
+    lda re,x
+    bne nz
+    lda #1
+.nz jsr div16
+    ldx t7
+    lda dnum
+    sta rq_lo,x
+    lda dnum+1
+    sta rq_hi,x
+    dex
+    bpl e
+    lda re+4                \ vertical extent
+    sta mul_b
+    lda #RTILT
+    jsr mul8
+    cmp #15
+    bcc b1
+    lda #15
+.b1 sta rbout
+    \ wtab[i*16 + dy]
+    ldx #4
+.ei stx t7
+    ldy #0
+.dy sty t6
+    \ idx = dy * q >> 4 (q 16-bit): lo part and hi part
+    lda rq_lo,x
+    sta mul_b
+    tya
+    jsr mul8
+    sta t1                  \ dy*qlo: A = high byte
+    lda mul_lo
+    sta t0
+    ldx t7
+    lda rq_hi,x
+    sta mul_b
+    lda t6
+    jsr mul8                \ dy*qhi: mul_lo = low byte, A = high
+    sta t2
+    lda mul_lo
+    clc
+    adc t1
+    sta t1
+    lda t2
+    adc #0
+    sta t2                  \ t2:t1:t0 = dy * q
+    ldx #4
+.sh lsr t2
+    ror t1
+    ror t0
+    dex
+    bne sh
+    lda #0
+    ldx t2
+    bne st
+    ldx t1
+    bne st                  \ idx >= 256: outside this edge
+    ldy t0
+    lda sq1,y
+    sta mul_b
+    ldx t7
+    lda re,x
+    jsr mul8
+.st sta t0
+    lda t7
+    asl a
+    asl a
+    asl a
+    asl a
+    ora t6
+    tay
+    lda t0
+    sta wtab,y
+    ldx t7
+    ldy t6
+    iny
+    cpy #16
+    bne dy
+    dex
+    bpl ei
+    rts
+}
+
+\ draw the rings around the globe at gcx, gcy (both on screen)
+.draw_rings
+{
+    jsr ring_setup
+    lda #0
+    sec
+    sbc rbout
+    sta rdy
+.row
+    lda rdy
+    bmi back
+    beq back
+    lda #1
+    bne fr
+.back
+    lda rsteady             \ steady: the far side is still there
+    beq b0
+    jmp next
+.b0 lda #0
+.fr sta rfront
+    lda rdy                 \ y = gcy + dy, on a graphics row
+    clc
+    adc gcy
+    cmp gpy0
+    bcs y1
+    jmp next
+.y1 cmp gpy1
+    beq y2
+    bcc y2
+    jmp next
+.y2 tay
+    sta ry
+    lda rowoff_lo,y
+    sta ptr
+    sta ptr3
+    lda rowoff_hi,y
+    clc
+    adc #HI(NEED)
+    sta ptr+1
+    adc #4
+    sta ptr3+1
+    lda ymod,y
+    sta ymodv
+    ldx pyrow,y
+    \ allowed pixel intervals: [0, 2GL), [2GLF+2, 2GRF), [2GR+2, 80)
+    lda GL,x
+    asl a
+    sta i1e
+    lda GLF,x
+    asl a
+    clc
+    adc #2
+    sta i2s
+    lda GRF,x
+    asl a
+    sta i2e
+    lda GR,x
+    asl a
+    clc
+    adc #2
+    sta i3s
+    lda GR,x
+    cmp GL,x
+    bcs gl                  \ globe row
+    lda #80                 \ no globe here: one interval
+    sta i3s
+    sta i2s
+.gl lda rsteady
+    beq ns
+    lda #0                  \ steady: only over the texture
+    sta i1e
+    lda #80
+    sta i3s
+.ns lda rfront
+    bne fr2
+    lda #80                 \ behind: not over the texture
+    sta i2s
+.fr2
+    \ |dy| -> wtab column
+    lda rdy
+    bpl ad
+    eor #&FF
+    clc
+    adc #1
+.ad sta t6
+    \ bands b = 0..3 between edges b and b+1, both sides
+    ldx #0
+.band
+    stx t7
+    lda ring_d,x
+    beq nb
+    sta dpat
+    txa
+    asl a
+    asl a
+    asl a
+    asl a
+    ora t6
+    tay
+    lda wtab,y              \ inner half-width
+    sta t4
+    lda wtab+16,y           \ outer
+    sta t5
+    cmp t4
+    beq nb
+    bcc nb
+    \ right side: gcx + inner .. gcx + outer
+    lda gcx
+    clc
+    adc t4
+    sta sa
+    lda gcx
+    clc
+    adc t5
+    sta sb
+    jsr clipdraw
+    \ left side: gcx - outer .. gcx - inner (clamped at 0)
+    lda gcx
+    sec
+    sbc t5
+    bcs l1
+    lda #0
+.l1 sta sa
+    lda gcx
+    sec
+    sbc t4
+    bcs l2
+    lda #0
+.l2 sta sb
+    jsr clipdraw
+.nb ldx t7
+    inx
+    cpx #4
+    bne band
+.next
+    lda rdy
+    cmp rbout
+    beq done
+    inc rdy
+    jmp row
+.done
+    rts
+}
+
+\ span sa..sb-1 cut to the three allowed intervals
+.clipdraw
+{
+    lda #0
+    ldx i1e
+    jsr one
+    lda i2s
+    ldx i2e
+    jsr one
+    lda i3s
+    ldx #80
+.one                        \ interval A .. X-1
+    cmp sa
+    bcs s1
+    lda sa
+.s1 sta t0
+    cpx sb
+    bcc s2
+    ldx sb
+.s2 stx t1
+    lda t0
+    cmp #2                  \ never column 0
+    bcs s3
+    lda #2
+    sta t0
+.s3 cmp t1
+    bcc span
+    rts
+.span
+    ldx t0
+.l  txa
+    clc
+    adc rdy
+    and #3
+    tay
+    lda bits4,y
+    and dpat
+    beq n
+    txa
+    and #1
+    ora ymodv
+    tay
+    lda pixbit,y
+    sta t2
+    txa
+    lsr a
+    tay
+    lda (ptr),y
+    cmp #7
+    beq has
+    lda #7
+    sta (ptr),y
+    lda #&A0
+    sta (ptr3),y
+.has
+    lda t2
+    ora (ptr3),y
+    sta (ptr3),y
+.n  inx
+    cpx t1
+    bcc l
+    rts
+}

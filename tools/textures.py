@@ -219,16 +219,17 @@ def jupiter():
 
 
 def saturn():
-    m = np.zeros((H, W), np.uint8)                         # 0 yellow
+    m = np.zeros((H, W), np.uint8)                         # 0 pale yellow
     n = noise(12, 6, 2, seed=31)
     L = LAT + (n - 0.5) * 1.5
-    m[(np.abs(L) < 9)] = 1                                 # bright equatorial zone (white)
-    m[(L > 14) & (L < 22)] = 2                             # belts (dithered white)
-    m[(L < -14) & (L > -22)] = 2
-    m[(L > 36) & (L < 42)] = 3
-    m[np.abs(L) > 62] = 4                                  # polar (cyan hex-ish)
-    pal = [YELLOW, WHITE, WHITE, WHITE, CYAN, YELLOW, YELLOW, YELLOW]
-    dith = [0, 0, 90, 140, 160, 0, 0, 0]
+    m[(L > 12) & (L < 20)] = 1                             # belts (sparse red: tan)
+    m[(L < -12) & (L > -20)] = 1
+    m[(L > 30) & (L < 36)] = 2                             # fainter belts
+    m[(L < -30) & (L > -36)] = 2
+    m[np.abs(L) > 64] = 3                                  # polar (cyan, the hexagon's haze)
+    m[(np.abs(L) < 6) & (n > 0.6)] = 4                     # equatorial white clouds
+    pal = [YELLOW, RED, RED, CYAN, WHITE, YELLOW, YELLOW, YELLOW]
+    dith = [0, 70, 35, 150, 60, 0, 0, 0]
     return m, pal, dith, False
 
 
