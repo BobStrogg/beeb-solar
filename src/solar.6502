@@ -147,6 +147,9 @@ GUARD SCRB
     sta texb
     sta lastR
     lda #0
+    sta quitf
+    sta gsteady
+    sta keepout
     sta ringR
     sta ckey
     sta mzlast
@@ -230,12 +233,27 @@ GUARD SCRB
 .cz0 sta &0480,x
     dex
     bpl cz0
+    lda #13             \ and its input line (BASIC carries on reading it)
+    ldx #0
+.cz1 sta &0700,x
+    inx
+    bne cz1
     ldx #&8F
 .rz lda zpsave,x
     sta &00,x
     dex
     cpx #&FF
     bne rz
+    lda &18             \ NEW: an empty BASIC program at PAGE, TOP after it
+    sta pg+2
+    sta pg2+2
+    sta &13
+    lda #13
+.pg sta &FF00
+    lda #&FF
+.pg2 sta &FF01
+    lda #2
+    sta &12
     rts
 }
 
@@ -911,10 +929,10 @@ GUARD SCRB
     lda zdir
     beq still
     bmi out
-    lda elapsed         \ zooming in: 4 per vsync
+    lda elapsed         \ zooming in: 3 per vsync
+    sta t0
     asl a
-    asl a
-    clc
+    adc t0
     adc zs
     bcc i1
     lda #255
@@ -926,8 +944,9 @@ GUARD SCRB
 .r  rts
 .out
     lda elapsed
+    sta t0
     asl a
-    asl a
+    adc t0
     sta t0
     lda zs
     sec
@@ -1172,12 +1191,19 @@ GUARD SCRB
     lda cur             \ Saturn: its rings and stars outside stay put
     cmp #6
     beq pos
-    jsr part_clear
+    cmp #0              \ the Sun: a new corona every other frame
+    bne pc
+    lda fcount
+    and #1
+    sta keepout
+    bne pos
+.pc jsr part_clear
     jsr draw_stars
     jmp pos
 .full
     lda #0
     sta gsteady
+    sta keepout
     jsr clear_need
     jsr draw_stars
 .pos
@@ -2018,6 +2044,65 @@ CNEED = TEX
 .r  rts
 }
 
+\ pixels t0 .. t1-1 of row py in pcol (cells of another colour are taken over)
+.hspan
+{
+    ldy py
+    lda rowoff_lo,y
+    sta ptr
+    sta ptr3
+    lda rowoff_hi,y
+    clc
+    adc #HI(NEED)
+    sta ptr+1
+    adc #4
+    sta ptr3+1
+    lda ymod,y
+    sta ymodv
+    ldx t0
+.l  txa
+    lsr a
+    tay
+    lda (ptr),y
+    cmp pcol
+    beq has
+    lda pcol
+    sta (ptr),y
+    lda #&A0
+    sta (ptr3),y
+.has
+    txa                 \ even x with x+1 in the span: both pixels at once
+    and #1
+    bne one
+    inx
+    cpx t1
+    beq last
+    ldy ymodv
+    lda pixbit,y
+    ora pixbit+1,y
+    jmp put
+.last
+    dex
+.one
+    txa
+    and #1
+    ora ymodv
+    tay
+    lda pixbit,y
+.put
+    sta t2
+    txa
+    lsr a
+    tay
+    lda t2
+    ora (ptr3),y
+    sta (ptr3),y
+    inx
+    cpx t1
+    bcc l
+    rts
+}
+
 \ flat disc, centre px/py, vertical radius A, colour pcol
 .fill_disc
 {
@@ -2057,6 +2142,23 @@ CNEED = TEX
     sbc t7
     sta ddy             \ dy (signed)
 .row
+    lda ddy             \ py = dcy + dy: rows off the graphics area are skipped
+    jsr sext
+    clc
+    adc dcy
+    sta py
+    txa
+    adc dcy+1
+    bne skp
+    lda py
+    cmp gpy0
+    bcc skp
+    cmp gpy1
+    beq rok
+    bcc rok
+.skp
+    jmp nrow
+.rok
     lda ddy             \ |2dy+1|
     asl a
     clc
@@ -2099,32 +2201,42 @@ CNEED = TEX
     adc #0
     sta t6              \ n (pixels each side), ignoring rounding
     beq nrow
-    \ py = dcy + dy ; px from dcx - n to dcx + n - 1
-    lda ddy
-    jsr sext
-    clc
-    adc dcy
-    sta py
-    txa
-    adc dcy+1
-    sta py+1
+    \ span dcx - n .. dcx + n - 1, cut to pixels 2..79
     lda dcx
     sec
     sbc t6
-    sta px
+    sta t0
     lda dcx+1
     sbc #0
-    sta px+1
-    lda t6
+    bmi c0              \ starts left of the screen
+    bne nrow            \ right of it
+    lda t0
+    cmp #2
+    bcs c1
+.c0 lda #2
+    sta t0
+.c1 lda t6
     asl a
-    sta t3
-.pix
-    jsr plot
-    inc px
-    bne pi2
-    inc px+1
-.pi2 dec t3
-    bne pix
+    clc
+    adc t0
+    sta t1              \ (only valid when the start was not clipped)
+    lda dcx
+    clc
+    adc t6
+    sta t2
+    lda dcx+1
+    adc #0
+    bmi nrow            \ ends left of the screen
+    bne c2
+    lda t2
+    cmp #80
+    bcc c3
+.c2 lda #80
+.c3 sta t1
+    lda t0
+    cmp t1
+    bcs nrow
+    jsr hspan
 .nrow
     inc ddy
     lda ddy
@@ -2223,6 +2335,7 @@ NEXT
 .tt_hi    SKIP 3
 .ringR    SKIP 1
 .rsteady  SKIP 1
+.keepout  SKIP 1
 .rgx      SKIP 1
 .re       SKIP 5
 .rq_lo    SKIP 5
@@ -2308,6 +2421,7 @@ ORG &0480
 GUARD &0800
 .datatext
 INCLUDE "datatext.6502"
+.speeds   EQUS " 0.8d 1.6d 3.1d 6.2d12.5d  25d  50d 100d 200d 400d 800d"
 .datatext_end
 PRINT "text: ", ~datatext, "-", ~datatext_end
 SAVE "SOLART", datatext, datatext_end

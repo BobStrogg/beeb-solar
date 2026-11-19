@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BEEB-SOLAR - the solar system on a BBC Micro</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="icon" href="favicon.ico">
+<style>
+  html, body { touch-action: manipulation; }
+  body { background:#000; color:#fff; font-family: "Courier New", monospace; margin:0; padding:16px; }
+  h1 { color:#ff0; background:#00f; display:inline-block; padding:2px 12px; margin:0 0 8px; letter-spacing:2px; }
+  .wrap { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-start; }
+  #stage { width: 820px; max-width: 100%; }
+  iframe { width: 100%; aspect-ratio: 4 / 3.2; border: 2px solid #333; background:#000; display:block; }
+  table { border-collapse: collapse; }
+  td { padding: 2px 10px 2px 0; vertical-align: top; }
+  td:first-child { color:#0ff; white-space:nowrap; }
+  a { color:#0f0; }
+  .note { color:#aaa; max-width: 820px; font-size: 13px; }
+  .keys { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; touch-action: manipulation; }
+  .keys button { font: inherit; font-size: 15px; color:#fff; background:#222; border:1px solid #555; border-radius:6px;
+      padding: 8px 12px; min-height: 40px; min-width: 44px; touch-action: none; -webkit-user-select:none; user-select:none;
+      -webkit-touch-callout:none; cursor:pointer; }
+  .keys button.on { background:#06c; }
+  .keys button b { color:#ff0; }
+  .keys span { align-self:center; color:#aaa; }
+</style>
+</head>
+<body>
+<h1>BEEB-SOLAR</h1>
+<div class="note"><b>The solar system in Mode 7 teletext graphics on a 1981 BBC Micro Model B</b>, in pure 6502 machine code, running here in <a href="https://github.com/mattgodbolt/jsbeeb">jsbeeb</a>.
+The eight planets move on their real (JPL Keplerian) orbits, starting on 18 November 2026; pick one and the view eases in to a spinning textured globe
+&mdash; Earth's continents come from Natural Earth's coastlines, the Sun has granulation, sunspots and a flickering corona, Saturn has its rings.
+Click the emulator to give it the keyboard, or use the buttons.</div>
+<div class="wrap">
+  <div id="stage">
+    <iframe id="beeb" src="about:blank" allow="autoplay; fullscreen" onload="this.contentWindow.focus()"></iframe>
+    <div class="keys">
+      <span>go to:</span>
+      <button data-code="KeyS" data-key="s"><b>S</b>un</button>
+      <button data-code="Digit1" data-key="1"><b>1</b> Me</button>
+      <button data-code="Digit2" data-key="2"><b>2</b> Ve</button>
+      <button data-code="Digit3" data-key="3"><b>3</b> Ea</button>
+      <button data-code="Digit4" data-key="4"><b>4</b> Ma</button>
+      <button data-code="Digit5" data-key="5"><b>5</b> Ju</button>
+      <button data-code="Digit6" data-key="6"><b>6</b> Sa</button>
+      <button data-code="Digit7" data-key="7"><b>7</b> Ur</button>
+      <button data-code="Digit8" data-key="8"><b>8</b> Ne</button>
+      <button data-code="KeyM" data-key="m"><b>M</b>oon</button>
+    </div>
+    <div class="keys">
+      <button data-code="ArrowLeft" data-key="ArrowLeft"><b>&larr;</b></button>
+      <button data-code="ArrowRight" data-key="ArrowRight"><b>&rarr;</b></button>
+      <button data-code="Space" data-key=" "><b>SPACE</b> zoom</button>
+      <button data-code="Comma" data-key=","><b>&lt;</b> slower</button>
+      <button data-code="Period" data-key="."><b>&gt;</b> faster</button>
+      <button data-code="KeyR" data-key="r"><b>R</b>everse</button>
+      <button data-code="KeyP" data-key="p"><b>P</b>ause</button>
+      <button data-code="KeyN" data-key="n"><b>N</b>ow</button>
+      <button data-code="KeyV" data-key="v"><b>V</b>iew</button>
+      <button data-code="KeyT" data-key="t"><b>T</b>ilt</button>
+      <button data-code="KeyO" data-key="o"><b>O</b>rbits</button>
+      <button data-code="KeyI" data-key="i"><b>I</b>nfo</button>
+      <button data-code="KeyF" data-key="f"><b>F</b>ps</button>
+    </div>
+  </div>
+  <table>
+    <tr><td>&larr; &rarr;</td><td>pick a body (in a close-up: fly to the next one)</td></tr>
+    <tr><td>SPACE / RETURN</td><td>zoom in to the picked body / back out (again while moving turns round)</td></tr>
+    <tr><td>1-8, S or 0, M or 9</td><td>fly straight to a planet, the Sun or the Moon</td></tr>
+    <tr><td>&lt; &gt; (or , . &darr; &uarr;)</td><td>time slower / faster: 0.8 to 800 days a second</td></tr>
+    <tr><td>R</td><td>run time backwards / forwards</td></tr>
+    <tr><td>P</td><td>pause / resume time</td></tr>
+    <tr><td>N</td><td>back to the start date</td></tr>
+    <tr><td>V</td><td>whole solar system / inner planets</td></tr>
+    <tr><td>T</td><td>tilt the view of the orbits</td></tr>
+    <tr><td>O</td><td>orbits on / off</td></tr>
+    <tr><td>I</td><td>header and facts on / off (full-screen graphics)</td></tr>
+    <tr><td>F</td><td>frame rate on / off</td></tr>
+    <tr><td>Q / ESCAPE</td><td>quit to BASIC (<code>*RUN SOLAR</code> to start again)</td></tr>
+    <tr><td colspan="2"><a id="fullui" href="jsbeeb/index.html?model=B-DFS1.2&amp;disc=beeb-solar.ssd&amp;autoboot">Open in the full jsbeeb UI</a> &middot;
+      <a href="jsbeeb/discs/beeb-solar.ssd" download>Download beeb-solar.ssd</a></td></tr>
+  </table>
+</div>
+<p class="note">Source, discs and an MMFS image: <a href="https://github.com/BobStrogg/beeb-solar">github.com/BobStrogg/beeb-solar</a></p>
+<script>
+  document.getElementById("beeb").src = "jsbeeb/index.html?model=B-DFS1.2&disc=beeb-solar.ssd&autoboot&embed";
+</script>
+<script src="keys.js"></script>
+</body>
+</html>

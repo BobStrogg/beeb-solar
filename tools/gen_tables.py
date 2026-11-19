@@ -164,7 +164,7 @@ print("textures", tsize, "bytes", file=sys.stderr)
 NAMES = ["SUN", "MERCURY", "VENUS", "EARTH", "MARS", "JUPITER", "SATURN", "URANUS", "NEPTUNE", "MOON"]
 TITLECOL = [3, 7, 3, 6, 1, 3, 3, 6, 4, 7]       # alpha colour of the name
 DOTCOL = [3, 7, 3, 6, 1, 3, 3, 6, 6, 7]         # system-view dot colour (graphics)
-RFULL = [31, 31, 31, 31, 31, 31, 17, 31, 31, 31]
+RFULL = [28, 27, 31, 31, 31, 31, 17, 31, 31, 27]
 SPIN = [40, 40, -24, 110, 106, 220, 200, -150, 160, 24]   # texels/256 per vsync (visual)
 FACTS = [
     ("G2V star  Radius 696,000 km", "Surface 5,500C  Core 15 million C"),

@@ -574,7 +574,8 @@
     sta gsg0
     lda gr1
     sta gsg1
-.fc lda cur             \ the Sun's corona
+.fc lda cur             \ the Sun's corona (unless last frame's is kept)
+    ora keepout
     bne r
     jmp corona
 .r  rts
